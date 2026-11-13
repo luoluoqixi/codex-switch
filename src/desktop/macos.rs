@@ -66,6 +66,7 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
                 .context("macOS 应用信息不完整")?;
             Ok(AppStatus {
                 app,
+                debug_endpoint: false,
                 pids: pids(&value["pids"]),
                 path: optional_path(&value["path"]),
                 problem: value["problem"]
@@ -101,9 +102,7 @@ pub(super) fn launch(status: &AppStatus) -> Result<()> {
     let mut command = Command::new("/usr/bin/open");
     command.arg("-a").arg(path);
     let theme_arguments = crate::themes::launch_arguments()?;
-    if !theme_arguments.is_empty() {
-        command.arg("--args").args(theme_arguments);
-    }
+    command.arg("--args").args(theme_arguments);
     output(command).context("无法打开 macOS 应用，请检查设置中的 .app 路径")?;
     Ok(())
 }

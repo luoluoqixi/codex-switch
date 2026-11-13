@@ -13,17 +13,12 @@ use std::{
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 pub(super) const DEBUG_PORT: u16 = 9347;
-static ENABLED: AtomicBool = AtomicBool::new(false);
 static PROFILE: OnceLock<PathBuf> = OnceLock::new();
 static EXECUTABLE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
@@ -53,22 +48,20 @@ fn verify_listener() -> Result<()> {
 
 /// Only the user's existing Open/Restart command consumes these arguments.
 pub(crate) fn launch_arguments() -> Result<Vec<OsString>> {
-    if !ENABLED.load(Ordering::Acquire) {
-        return Ok(Vec::new());
-    }
     let profile = PROFILE.get().context("主题运行目录尚未初始化")?;
     fs::create_dir_all(profile).context("无法创建主题所需的 Codex 浏览器数据目录")?;
-    Ok(vec![
+    Ok(debug_arguments(profile))
+}
+
+fn debug_arguments(profile: &Path) -> Vec<OsString> {
+    vec![
         "--remote-debugging-address=127.0.0.1".into(),
         format!("--remote-debugging-port={DEBUG_PORT}").into(),
         format!("--user-data-dir={}", profile.display()).into(),
-    ])
+    ]
 }
 
 pub(crate) fn verify_launch_endpoint() -> Result<()> {
-    if !ENABLED.load(Ordering::Acquire) {
-        return Ok(());
-    }
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         if cdp::is_available() {
@@ -79,6 +72,32 @@ pub(crate) fn verify_launch_endpoint() -> Result<()> {
     anyhow::bail!(
         "应用已打开，但未能开启主题调试通道。请检查应用路径；当前 Codex 版本也可能不支持调试启动参数。主题尚未确认生效。"
     )
+}
+
+pub(crate) fn has_debug_endpoint() -> bool {
+    cdp::is_available()
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ThemeStatus {
+    #[default]
+    Off,
+    WaitingForConnection,
+    WaitingForWindow,
+    Applied(usize),
+    Failed(String),
+}
+
+impl ThemeStatus {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Off => "主题已关闭，主题后台任务已停止。".into(),
+            Self::WaitingForConnection => "已选择主题，等待 Codex 调试通道；请使用本工具打开 Codex，已普通启动的会话需重新打开一次。".into(),
+            Self::WaitingForWindow => "调试通道已连接，正在等待 Codex 主窗口就绪…".into(),
+            Self::Applied(windows) => format!("主题已应用到 {windows} 个 Codex 窗口，无需重启。"),
+            Self::Failed(error) => format!("主题应用失败：{error}"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -92,6 +111,7 @@ pub(crate) struct ThemeSnapshot {
     pub themes: Vec<ThemeEntry>,
     pub selected: Option<String>,
     pub transparency: u8,
+    pub status: ThemeStatus,
 }
 impl Default for ThemeSnapshot {
     fn default() -> Self {
@@ -99,6 +119,7 @@ impl Default for ThemeSnapshot {
             themes: Vec::new(),
             selected: None,
             transparency: 30,
+            status: ThemeStatus::Off,
         }
     }
 }
@@ -114,14 +135,33 @@ struct Library {
     transparencies: BTreeMap<String, u8>,
     worker: Option<Worker>,
     errors: Arc<Mutex<Option<String>>>,
+    status: Arc<Mutex<ThemeStatus>>,
+}
+enum WorkerCommand {
+    Update(String, mpsc::Sender<Result<ThemeStatus>>),
+    Stop,
+    Detach,
 }
 struct Worker {
-    stop: mpsc::Sender<()>,
+    commands: mpsc::Sender<WorkerCommand>,
     thread: Option<JoinHandle<Result<()>>>,
 }
 impl Worker {
+    fn update(&self, script: String) -> Result<ThemeStatus> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(WorkerCommand::Update(script, reply))
+            .context("主题后台任务已退出")?;
+        receiver.recv().context("主题后台任务未返回应用结果")?
+    }
     fn stop(mut self) -> Result<()> {
-        let _ = self.stop.send(());
+        self.finish(WorkerCommand::Stop)
+    }
+    fn detach(mut self) -> Result<()> {
+        self.finish(WorkerCommand::Detach)
+    }
+    fn finish(&mut self, command: WorkerCommand) -> Result<()> {
+        let _ = self.commands.send(command);
         self.thread
             .take()
             .unwrap()
@@ -132,9 +172,8 @@ impl Worker {
 impl Drop for Library {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
-            let _ = worker.stop();
+            let _ = worker.detach();
         }
-        ENABLED.store(false, Ordering::Release);
     }
 }
 
@@ -150,6 +189,7 @@ impl ThemeService {
                 transparencies: BTreeMap::new(),
                 worker: None,
                 errors: Arc::new(Mutex::new(None)),
+                status: Arc::new(Mutex::new(ThemeStatus::Off)),
             })),
         }
     }
@@ -191,6 +231,11 @@ impl ThemeService {
             library.save()?;
         }
         Ok(ThemeSnapshot {
+            status: library
+                .status
+                .lock()
+                .map_err(|_| anyhow::anyhow!("无法读取主题应用状态"))?
+                .clone(),
             transparency: library
                 .selected
                 .as_ref()
@@ -225,8 +270,8 @@ impl ThemeService {
         if let Some(id) = id {
             let transparency = library.transparencies.get(&id).copied();
             let script = payload::build(Path::new(&id), transparency)?;
-            library.activate(id, script)?;
-            Ok("已选择主题；如未显示，请点击现有的重新打开按钮。".into())
+            let status = library.activate(id, script)?;
+            Ok(status.message())
         } else {
             library.disable()?;
             library.save()?;
@@ -243,18 +288,26 @@ impl ThemeService {
         let id = library.selected.clone().context("请先开启主题")?;
         let script = payload::build(Path::new(&id), Some(value))?;
         let previous = library.transparencies.insert(id.clone(), value);
-        if let Err(error) = library.activate(id.clone(), script) {
-            match previous {
-                Some(previous) => {
-                    library.transparencies.insert(id, previous);
+        let status = match library.activate(id.clone(), script) {
+            Ok(status) => status,
+            Err(error) => {
+                match previous {
+                    Some(previous) => {
+                        library.transparencies.insert(id, previous);
+                    }
+                    None => {
+                        library.transparencies.remove(&id);
+                    }
                 }
-                None => {
-                    library.transparencies.remove(&id);
-                }
+                library.save()?;
+                return Err(error);
             }
-            return Err(error);
-        }
-        Ok(format!("背景透明度已设为 {value}%"))
+        };
+        Ok(if matches!(status, ThemeStatus::Applied(_)) {
+            format!("背景透明度已设为 {value}%")
+        } else {
+            format!("背景透明度已保存为 {value}%。{}", status.message())
+        })
     }
 
     pub(crate) fn import_zip(&self, directory: &str, path: &Path) -> Result<String> {
@@ -298,18 +351,13 @@ impl ThemeService {
         self.inner.try_lock().ok()?.errors.try_lock().ok()?.take()
     }
 
-    /// Stop injection before process exit, while keeping the saved selection.
+    /// Disconnect before process exit, preserving the current page and saved settings.
     pub(crate) fn shutdown(&self) -> Result<()> {
         let mut library = self
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("无法停止主题后台任务"))?;
-        ENABLED.store(false, Ordering::Release);
-        if let Err(error) = library.worker.take().map(Worker::stop).transpose() {
-            library.selected = None;
-            library.save()?;
-            return Err(error);
-        }
+        library.worker.take().map(Worker::detach).transpose()?;
         Ok(())
     }
 }
@@ -343,9 +391,9 @@ impl Library {
                 return Ok(());
             }
             let script = payload::build(Path::new(id), self.transparencies.get(id).copied())?;
-            self.worker = Some(start_worker(script, self.errors.clone())?);
             self.selected = Some(id.into());
-            ENABLED.store(true, Ordering::Release);
+            self.worker = Some(start_worker(self.errors.clone(), self.status.clone())?);
+            self.worker.as_ref().unwrap().update(script)?;
         }
         Ok(())
     }
@@ -365,16 +413,23 @@ impl Library {
     }
     fn disable(&mut self) -> Result<()> {
         // Even when renderer cleanup reports an error, no worker may survive Off.
-        ENABLED.store(false, Ordering::Release);
         self.selected = None;
         let result = self.worker.take().map(Worker::stop).transpose();
+        *self
+            .status
+            .lock()
+            .map_err(|_| anyhow::anyhow!("无法更新主题应用状态"))? = ThemeStatus::Off;
+        *self
+            .errors
+            .lock()
+            .map_err(|_| anyhow::anyhow!("无法清理主题错误状态"))? = None;
         if let Err(error) = result {
             self.save()?;
             return Err(error);
         }
         Ok(())
     }
-    fn activate(&mut self, id: String, script: String) -> Result<()> {
+    fn activate(&mut self, id: String, script: String) -> Result<ThemeStatus> {
         let previous = self.selected.clone();
         // Persist first so a disk failure cannot leave an unrecorded new theme.
         self.selected = Some(id);
@@ -382,56 +437,102 @@ impl Library {
             self.selected = previous;
             return Err(error);
         }
-        if let Some(worker) = self.worker.take()
-            && let Err(error) = worker.stop()
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.thread.as_ref().is_some_and(JoinHandle::is_finished))
         {
-            self.report(format!("清理旧主题时出错：{error:#}"));
+            let _ = self.worker.take().unwrap().stop();
         }
-        match start_worker(script, self.errors.clone()) {
-            Ok(worker) => {
-                self.worker = Some(worker);
-                ENABLED.store(true, Ordering::Release);
-                Ok(())
-            }
-            Err(error) => {
-                self.selected = None;
-                ENABLED.store(false, Ordering::Release);
-                let _ = self.save();
-                Err(error)
+        if self.worker.is_none() {
+            match start_worker(self.errors.clone(), self.status.clone()) {
+                Ok(worker) => {
+                    self.worker = Some(worker);
+                }
+                Err(error) => {
+                    self.selected = None;
+                    let _ = self.save();
+                    return Err(error);
+                }
             }
         }
+        self.worker.as_ref().unwrap().update(script)
     }
 }
 
-fn start_worker(script: String, errors: Arc<Mutex<Option<String>>>) -> Result<Worker> {
-    let (stop, receiver) = mpsc::channel();
+fn start_worker(
+    errors: Arc<Mutex<Option<String>>>,
+    status: Arc<Mutex<ThemeStatus>>,
+) -> Result<Worker> {
+    let (commands, receiver) = mpsc::channel();
     let thread = thread::Builder::new()
         .name("codex-theme".into())
-        .spawn(move || {
-            let mut connection = cdp::Runtime::new();
-            let mut last_error = String::new();
-            loop {
-                if let Err(error) = connection.refresh(&script) {
-                    let message = format!("主题应用失败：{error:#}");
-                    if message != last_error {
-                        if let Ok(mut slot) = errors.lock() {
-                            *slot = Some(message.clone());
-                        }
-                        last_error = message;
-                    }
-                }
-                match receiver.recv_timeout(Duration::from_millis(1500)) {
-                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                }
-            }
-            connection.clear()
-        })
+        .spawn(move || run_worker(receiver, errors, status, cdp::Runtime::new()))
         .context("无法启动主题后台任务")?;
     Ok(Worker {
-        stop,
+        commands,
         thread: Some(thread),
     })
+}
+
+fn run_worker(
+    receiver: mpsc::Receiver<WorkerCommand>,
+    errors: Arc<Mutex<Option<String>>>,
+    status: Arc<Mutex<ThemeStatus>>,
+    mut connection: cdp::Runtime,
+) -> Result<()> {
+    let mut last_error = None;
+    let mut script = None;
+    loop {
+        let reply = match receiver.recv_timeout(Duration::from_millis(1500)) {
+            Ok(WorkerCommand::Update(source, reply)) => {
+                script = Some(source);
+                Some(reply)
+            }
+            Ok(WorkerCommand::Stop) => break,
+            // Closing a CDP socket does not undo styles already in the page.
+            // Only an explicit Off command should execute renderer cleanup.
+            Ok(WorkerCommand::Detach) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+        };
+        let Some(script) = script.as_deref() else {
+            continue;
+        };
+        let result = if reply.is_some() {
+            connection.replace(script)
+        } else {
+            connection.refresh(script)
+        };
+        let next_status = match &result {
+            Ok(status) => status.clone(),
+            Err(error) => ThemeStatus::Failed(format!("{error:#}")),
+        };
+        let next_error = match &next_status {
+            ThemeStatus::Failed(error) => Some(error.clone()),
+            _ => None,
+        };
+        if let Ok(mut slot) = errors.lock() {
+            if next_error.is_none() || reply.is_some() {
+                *slot = None;
+            } else if next_error != last_error {
+                *slot = next_error
+                    .as_ref()
+                    .map(|error| format!("主题应用失败：{error}"));
+            }
+        }
+        last_error = next_error;
+        if let Ok(mut status) = status.lock() {
+            *status = next_status;
+        }
+        if let Some(reply) = reply {
+            let _ = reply.send(result);
+        }
+    }
+    let result = connection.clear();
+    if let Ok(mut status) = status.lock() {
+        *status = ThemeStatus::Off;
+    }
+    result
 }
 
 fn theme_directory(configured: &str) -> Result<PathBuf> {

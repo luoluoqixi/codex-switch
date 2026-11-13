@@ -17,6 +17,6 @@
 
 ## 主题
 
-主题功能基于 [Codex Dream Skin](https://github.com/Fei-Away/Codex-Dream-Skin) 的渲染器集成，保留其 MIT 许可及来源说明。可从 [DreamSkin 主题库](https://dreamskin.cc/gallery) 下载主题，也可通过主界面的主题库按钮打开。
+主题功能基于 [Codex Dream Skin](https://github.com/Fei-Away/Codex-Dream-Skin) 的渲染器集成。可从 [DreamSkin 主题库](https://dreamskin.cc/gallery) 下载主题，也可通过主界面的主题库按钮打开。
 
 主题默认关闭。在设置中可指定主题目录，留空使用程序旁的 `Themes`。导入 ZIP 时按根目录（或第一个非点号开头文件夹）的 `manifest.json` 中的 `themeId` 建立主题文件夹，不做版本或哈希校验。手动解压的主题也会自动识别；在下拉框中选择主题后，可通过“效果…”调整背景透明度。

@@ -182,7 +182,19 @@ impl Switcher {
                     } else {
                         cx.theme().muted_foreground
                     })
-                    .child(format!("{} · {label}", app.name())),
+                    .child(if running && problem.is_none() {
+                        format!(
+                            "{} · {label} · 调试入口{}",
+                            app.name(),
+                            if status.is_some_and(AppStatus::has_debug_endpoint) {
+                                "已开启"
+                            } else {
+                                "未开启"
+                            }
+                        )
+                    } else {
+                        format!("{} · {label}", app.name())
+                    }),
             )
             .children(actions.iter().copied().map(|action| {
                 let disabled = unavailable

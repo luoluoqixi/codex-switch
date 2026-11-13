@@ -81,7 +81,6 @@ impl AuxiliaryWindow {
                     .child(
                         Button::new("editor-open-folder")
                             .outline()
-                            .small()
                             .icon(IconName::FolderOpen)
                             .flex_shrink_0()
                             .tooltip("打开 config.toml 所在文件夹")
@@ -93,7 +92,6 @@ impl AuxiliaryWindow {
                     .child(
                         Button::new("editor-open-externally")
                             .outline()
-                            .small()
                             .icon(IconName::ExternalLink)
                             .flex_shrink_0()
                             .disabled(busy)

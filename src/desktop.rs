@@ -60,6 +60,7 @@ pub(crate) struct AppStatus {
     #[cfg(target_os = "windows")]
     registered_id: Option<String>,
     problem: Option<String>,
+    debug_endpoint: bool,
 }
 
 impl AppStatus {
@@ -81,6 +82,9 @@ impl AppStatus {
     }
     pub fn has_installation_path(&self) -> bool {
         self.path.is_some() && self.problem.is_none()
+    }
+    pub fn has_debug_endpoint(&self) -> bool {
+        self.debug_endpoint
     }
 }
 
@@ -130,10 +134,15 @@ pub(crate) fn validate_paths(paths: &[String]) -> Result<()> {
 pub(crate) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let statuses = platform::inspect(paths)?;
+        let mut statuses = platform::inspect(paths)?;
         crate::themes::set_expected_executable(
             statuses.first().and_then(|status| status.path.clone()),
         );
+        for status in &mut statuses {
+            status.debug_endpoint = status.is_running()
+                && status.problem.is_none()
+                && crate::themes::has_debug_endpoint();
+        }
         Ok(statuses)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -154,7 +163,11 @@ pub(crate) fn perform(app: DesktopApp, action: AppAction, paths: &[String; 1]) -
             bail!("{problem}");
         }
         if matches!(action, AppAction::Open) && before.is_running() {
-            return Ok(format!("{} 已在运行。", app.name()));
+            anyhow::ensure!(
+                crate::themes::has_debug_endpoint(),
+                "Codex 已在运行，但没有可用的主题调试通道。请点击“重新打开”一次，之后可直接切换主题。"
+            );
+            return Ok(format!("{} 已在运行，主题调试通道可用。", app.name()));
         }
         if !matches!(action, AppAction::Close) {
             anyhow::ensure!(

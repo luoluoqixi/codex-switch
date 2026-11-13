@@ -118,6 +118,7 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
                 .context("系统应用信息不完整")?;
             Ok(AppStatus {
                 app,
+                debug_endpoint: false,
                 pids: pids(&value["pids"]),
                 path: optional_path(&value["path"]),
                 registered_id: value["appId"]
@@ -175,52 +176,28 @@ pub(super) fn close(status: &AppStatus, paths: &[String; 1]) -> Result<()> {
 
 pub(super) fn launch(status: &AppStatus) -> Result<()> {
     let theme_arguments = crate::themes::launch_arguments()?;
-    // AppsFolder navigation discards arbitrary command-line arguments. When
-    // theming is on, launch the exact executable found by discovery instead.
-    if !theme_arguments.is_empty() {
-        if let Some(path) = &status.path {
-            let mut command = Command::new(path);
-            command.args(&theme_arguments);
-            if let Some(parent) = path.parent() {
-                command.current_dir(parent);
-            }
-            if command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .is_ok()
-            {
-                return Ok(());
-            }
-        }
-        if let Some(id) = &status.registered_id {
-            return activate_with_arguments(id, &theme_arguments);
-        }
-        bail!("无法以主题模式打开应用，请在设置中选择 ChatGPT.exe 的完整路径");
-    }
-    let mut command = if let Some(id) = &status.registered_id {
-        let root = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .context("无法获取 Windows 系统目录")?;
-        let mut command = Command::new(root.join("explorer.exe"));
-        command.arg(format!("shell:AppsFolder\\{id}"));
-        command
-    } else {
-        let path = status.path.as_ref().context("请在设置中指定应用路径")?;
+    // AppsFolder navigation discards debugging arguments. Always launch with
+    // the persistent theme endpoint, including while themes are switched off.
+    if let Some(path) = &status.path {
         let mut command = Command::new(path);
+        command.args(&theme_arguments);
         if let Some(parent) = path.parent() {
             command.current_dir(parent);
         }
-        command
-    };
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("无法打开应用，请检查设置中的应用路径")?;
-    Ok(())
+        if command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    if let Some(id) = &status.registered_id {
+        return activate_with_arguments(id, &theme_arguments);
+    }
+    bail!("无法以主题模式打开应用，请在设置中选择 ChatGPT.exe 的完整路径");
 }
 
 fn activate_with_arguments(id: &str, arguments: &[std::ffi::OsString]) -> Result<()> {

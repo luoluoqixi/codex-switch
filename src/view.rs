@@ -291,7 +291,9 @@ impl Switcher {
         origin: Option<AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || self.prompt_open {
+        // The effects dialog stays open while its Apply command runs.
+        if self.busy || (self.prompt_open && !matches!(operation, Operation::ThemeTransparency(_)))
+        {
             return;
         }
         self.busy = true;
@@ -345,11 +347,10 @@ impl Switcher {
                 | Operation::ThemeTransparency(_)
                 | Operation::OpenThemes
         );
-        let themed_launch = self.themes.selected.is_some()
-            && matches!(
-                operation,
-                Operation::Desktop(_, AppAction::Open | AppAction::Restart)
-            );
+        let debug_launch = matches!(
+            operation,
+            Operation::Desktop(_, AppAction::Open | AppAction::Restart)
+        );
         let job = cx.background_spawn(async move {
             let result =
                 match operation {
@@ -516,7 +517,7 @@ impl Switcher {
                 cx.refresh_windows();
                 this.refresh_apps(cx);
                 this.refresh_themes(cx);
-                if (theme_operation || themed_launch) && !success {
+                if (theme_operation || debug_launch) && !success {
                     this.show_theme_error(this.message.clone(), cx);
                 }
                 cx.emit(OperationFinished {

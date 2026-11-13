@@ -360,6 +360,22 @@ fn off_is_persisted_without_starting_a_worker() {
         serde_json::from_slice(&fs::read(temp.path().join("theme-state.json")).unwrap()).unwrap();
     assert!(saved["selected"].is_null());
     assert!(service.set_transparency(30).is_err());
+    let arguments = debug_arguments(&temp.path().join("browser-profile"));
+    assert!(
+        arguments
+            .iter()
+            .any(|arg| arg == "--remote-debugging-address=127.0.0.1")
+    );
+    assert!(
+        arguments
+            .iter()
+            .any(|arg| arg == "--remote-debugging-port=9347")
+    );
+    assert!(
+        arguments
+            .iter()
+            .any(|arg| arg.to_string_lossy().starts_with("--user-data-dir="))
+    );
 }
 
 #[test]

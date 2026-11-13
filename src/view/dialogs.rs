@@ -229,7 +229,7 @@ impl Switcher {
         }
         self.busy = true;
         self.app_revision += 1;
-        self.message = "正在停止主题并退出…".into();
+        self.message = "正在停止后台任务并退出…".into();
         cx.notify();
         let service = self.theme_service.clone();
         let job = cx.background_spawn(async move { service.shutdown() });
@@ -239,7 +239,7 @@ impl Switcher {
                 let _ = this.update(cx, |this, cx| {
                     this.busy = false;
                     this.refresh_themes(cx);
-                    this.show_theme_error(format!("无法完成主题清理：{error:#}"), cx);
+                    this.show_theme_error(format!("无法停止主题后台任务：{error:#}"), cx);
                 });
             }
         })

@@ -11,6 +11,8 @@ struct AppShell {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     tray_profiles: Vec<TrayProfile>,
     #[cfg(any(target_os = "windows", target_os = "macos"))]
+    tray_themes: Vec<TrayTheme>,
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     _tray_observer: Option<Subscription>,
 }
 impl Global for AppShell {}
@@ -20,6 +22,7 @@ enum Command {
     Settings,
     RestartChatGpt,
     SwitchProfile(String),
+    SwitchTheme(Option<String>),
     Quit,
 }
 
@@ -36,6 +39,8 @@ pub(crate) fn start(store: Store, cx: &mut App) {
         tray: None,
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         tray_profiles: Vec::new(),
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        tray_themes: Vec::new(),
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         _tray_observer: None,
     });
@@ -137,6 +142,10 @@ fn dispatch(command: Command, cx: &mut App) {
         owner.update(cx, |owner, cx| owner.show_settings(cx));
         return;
     }
+    if let Command::SwitchTheme(id) = command {
+        owner.update(cx, |owner, cx| owner.select_theme_from_tray(id, cx));
+        return;
+    }
     if matches!(command, Command::RestartChatGpt | Command::SwitchProfile(_)) {
         let origin = main_window_handle(cx).filter(|handle| {
             cx.update_window(*handle, |_, window, _| window.is_visible())
@@ -168,7 +177,9 @@ fn dispatch(command: Command, cx: &mut App) {
         owner.update(cx, |owner, cx| match command {
             Command::Show => {}
             Command::Settings => owner.show_settings(cx),
-            Command::RestartChatGpt | Command::SwitchProfile(_) => unreachable!(),
+            Command::RestartChatGpt | Command::SwitchProfile(_) | Command::SwitchTheme(_) => {
+                unreachable!()
+            }
             Command::Quit => owner.request_exit(window, cx),
         });
     });
@@ -176,6 +187,41 @@ fn dispatch(command: Command, cx: &mut App) {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 const SWITCH_PROFILE_PREFIX: &str = "switch-profile:";
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+const SWITCH_THEME_PREFIX: &str = "switch-theme:";
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[derive(PartialEq, Eq)]
+struct TrayTheme {
+    id: Option<String>,
+    name: String,
+    current: bool,
+    enabled: bool,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn tray_themes(cx: &App) -> Vec<TrayTheme> {
+    let owner = cx.global::<AppShell>().owner.read(cx);
+    let snapshot = owner.theme_snapshot();
+    let enabled = !owner.operation_pending();
+    let mut themes = vec![TrayTheme {
+        id: None,
+        name: "关闭主题".into(),
+        current: snapshot.selected.is_none(),
+        enabled: enabled && snapshot.selected.is_some(),
+    }];
+    themes.extend(snapshot.themes.iter().map(|theme| {
+        let current = snapshot.selected.as_ref() == Some(&theme.id);
+        TrayTheme {
+            id: Some(theme.id.clone()),
+            name: theme.name.clone(),
+            current,
+            enabled: enabled && !current,
+        }
+    }));
+    themes
+}
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 #[derive(PartialEq, Eq)]
@@ -209,7 +255,10 @@ fn tray_profiles(cx: &App) -> Vec<TrayProfile> {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn tray_menu(profiles: &[TrayProfile]) -> anyhow::Result<tray_icon::menu::Menu> {
+fn tray_menu(
+    profiles: &[TrayProfile],
+    themes: &[TrayTheme],
+) -> anyhow::Result<tray_icon::menu::Menu> {
     use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     let menu = Menu::new();
@@ -233,9 +282,34 @@ fn tray_menu(profiles: &[TrayProfile]) -> anyhow::Result<tray_icon::menu::Menu> 
             ))?;
         }
     }
+    let theme_menu = Submenu::new("切换主题", true);
+    for theme in themes {
+        let id = theme
+            .id
+            .as_ref()
+            .map(|id| format!("{SWITCH_THEME_PREFIX}{id}"))
+            .unwrap_or_else(|| "theme-off".into());
+        let name = if cfg!(target_os = "windows") {
+            theme.name.replace('&', "&&")
+        } else {
+            theme.name.clone()
+        };
+        theme_menu.append(&CheckMenuItem::with_id(
+            id,
+            name,
+            theme.enabled,
+            theme.current,
+            None,
+        ))?;
+    }
+    if themes.iter().all(|theme| theme.id.is_none()) {
+        theme_menu.append(&PredefinedMenuItem::separator())?;
+        theme_menu.append(&MenuItem::new("暂无主题", false, None))?;
+    }
     menu.append_items(&[
         &show,
         &switch,
+        &theme_menu,
         &MenuItem::with_id("settings", "设置…", true, None),
         &MenuItem::with_id("restart-chatgpt", "重启 ChatGPT…", true, None),
         &PredefinedMenuItem::separator(),
@@ -247,17 +321,19 @@ fn tray_menu(profiles: &[TrayProfile]) -> anyhow::Result<tray_icon::menu::Menu> 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn refresh_tray_menu(cx: &mut App) {
     let profiles = tray_profiles(cx);
+    let themes = tray_themes(cx);
     let shell = cx.global_mut::<AppShell>();
-    if shell.tray_profiles == profiles {
+    if shell.tray_profiles == profiles && shell.tray_themes == themes {
         return;
     }
     if let Some(tray) = &shell.tray {
-        match tray_menu(&profiles) {
+        match tray_menu(&profiles, &themes) {
             Ok(menu) => {
                 tray.set_menu(Some(Box::new(menu)));
                 shell.tray_profiles = profiles;
+                shell.tray_themes = themes;
             }
-            Err(error) => eprintln!("无法更新托盘配置菜单：{error:#}"),
+            Err(error) => eprintln!("无法更新托盘菜单：{error:#}"),
         }
     }
 }
@@ -268,8 +344,9 @@ fn install_tray(cx: &mut App) {
         MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, menu::MenuEvent,
     };
     let profiles = tray_profiles(cx);
+    let themes = tray_themes(cx);
     let build = || -> anyhow::Result<_> {
-        let menu = tray_menu(&profiles)?;
+        let menu = tray_menu(&profiles, &themes)?;
         let image = image::load_from_memory(include_bytes!("../assets/icon.png"))?
             .resize(32, 32, image::imageops::FilterType::Lanczos3)
             .into_rgba8();
@@ -287,6 +364,7 @@ fn install_tray(cx: &mut App) {
         Ok(tray) => {
             cx.global_mut::<AppShell>().tray = Some(tray);
             cx.global_mut::<AppShell>().tray_profiles = profiles;
+            cx.global_mut::<AppShell>().tray_themes = themes;
             let owner = cx.global::<AppShell>().owner.clone();
             let observer = cx.observe(&owner, |_, cx| refresh_tray_menu(cx));
             cx.global_mut::<AppShell>()._tray_observer = Some(observer);
@@ -311,10 +389,14 @@ fn install_tray(cx: &mut App) {
                     "settings" => Command::Settings,
                     "restart-chatgpt" => Command::RestartChatGpt,
                     "quit" => Command::Quit,
-                    id => match id.strip_prefix(SWITCH_PROFILE_PREFIX) {
-                        Some(name) => Command::SwitchProfile(name.to_string()),
-                        None => return,
-                    },
+                    "theme-off" => Command::SwitchTheme(None),
+                    id if id.starts_with(SWITCH_THEME_PREFIX) => {
+                        Command::SwitchTheme(Some(id[SWITCH_THEME_PREFIX.len()..].to_owned()))
+                    }
+                    id if id.starts_with(SWITCH_PROFILE_PREFIX) => {
+                        Command::SwitchProfile(id[SWITCH_PROFILE_PREFIX.len()..].to_owned())
+                    }
+                    _ => return,
                 };
                 let _ = sender.try_send(command);
             }));

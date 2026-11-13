@@ -62,6 +62,16 @@ impl Render for TransparencyControl {
 }
 
 impl Switcher {
+    pub(crate) fn theme_snapshot(&self) -> &ThemeSnapshot {
+        &self.themes
+    }
+
+    pub(crate) fn select_theme_from_tray(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        if self.loaded && !self.operation_pending() {
+            self.run_with_origin(Operation::SelectTheme(id), None, cx);
+        }
+    }
+
     pub(super) fn refresh_themes(&mut self, cx: &mut Context<Self>) {
         if !self.loaded || self.operation_pending() || self.checking_themes {
             return;
@@ -85,6 +95,7 @@ impl Switcher {
                 match result {
                     Ok(snapshot) => {
                         let unchanged = this.themes.selected == snapshot.selected
+                            && this.themes.status == snapshot.status
                             && this.themes.transparency == snapshot.transparency
                             && this.themes.themes.len() == snapshot.themes.len()
                             && this
@@ -95,6 +106,11 @@ impl Switcher {
                                 .all(|(old, new)| old.id == new.id && old.name == new.name);
                         if unchanged && this.theme_select_synced {
                             return;
+                        }
+                        if this.themes.status != snapshot.status && snapshot.selected.is_some() {
+                            this.message = snapshot.status.message();
+                            this.is_error =
+                                matches!(snapshot.status, crate::themes::ThemeStatus::Failed(_));
                         }
                         let mut choices = vec![ThemeChoice::off()];
                         choices.extend(snapshot.themes.iter().map(|theme| ThemeChoice {
@@ -158,6 +174,8 @@ impl Switcher {
         cx.defer(move |cx| {
             let failed_owner = owner.clone();
             let failed_message = message.clone();
+            // Tray commands may run after the main native window was closed.
+            let origin = crate::shell::show_main(cx).unwrap_or(origin);
             if cx
                 .update_window(origin, |_, window, cx| {
                     window.open_alert_dialog(cx, move |alert, _, _| {
@@ -258,29 +276,29 @@ impl Switcher {
                             _subscription: subscription,
                         }
                     });
-                    window.open_alert_dialog(cx, move |alert, _, _| {
+                    window.open_alert_dialog(cx, move |alert, _, cx| {
                         let commit_owner = owner.clone();
                         let close_owner = owner.clone();
                         let slider_value = slider.clone();
+                        let busy = owner.upgrade().is_none_or(|owner| owner.read(cx).busy);
                         alert
                             .title("当前主题效果")
                             .description("调整界面背景的透明度；数值越大，背景图片越明显。")
                             .confirm()
                             .button_props(
                                 DialogButtonProps::default()
-                                    .ok_text("应用")
-                                    .cancel_text("取消"),
+                                    .ok_text(if busy { "应用中…" } else { "应用" })
+                                    .cancel_text("关闭"),
                             )
                             .child(control.clone())
                             .on_ok(move |_, window, cx| {
                                 let value = slider_value.read(cx).value().start().round() as u8;
                                 let _ = commit_owner.update(cx, |this, cx| {
-                                    this.prompt_open = false;
                                     if this.themes.selected.is_some() {
                                         this.run(Operation::ThemeTransparency(value), window, cx);
                                     }
                                 });
-                                true
+                                false
                             })
                             .on_close(move |_, _, cx| {
                                 let _ = close_owner.update(cx, |this, cx| {
