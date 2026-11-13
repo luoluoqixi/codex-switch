@@ -140,20 +140,36 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
         .collect()
 }
 
-pub(super) fn close(status: &AppStatus) -> Result<()> {
-    // taskkill without /F asks GUI processes to terminate normally. Refusal or a
-    // save prompt is reported by the exit wait; a restart never races that prompt.
+pub(super) fn close(status: &AppStatus, paths: &[String; 1]) -> Result<()> {
+    if !status.is_running() {
+        return Ok(());
+    }
+    // Closing a window can leave the application resident in the system tray.
+    // End the verified application PIDs and their children so a restart loads
+    // the new configuration instead of reconnecting to an existing process.
     let root = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .context("无法获取 Windows 系统目录")?;
     let mut command = Command::new(root.join("System32/taskkill.exe"));
+    command.args(["/F", "/T"]);
     for pid in &status.pids {
         command.arg("/PID").arg(pid.to_string());
     }
-    command.arg("/T");
-    // Some helper processes can exit before taskkill reaches them. The caller
-    // verifies actual process disappearance instead of relying on its exit code.
-    let _ = output(command);
+    if let Err(error) = output(command) {
+        // /T may already have removed another PID included in the same request.
+        // A nonzero result is harmless only when the application actually exited.
+        let after = inspect(paths).context("关闭命令失败，且无法重新确认应用状态")?;
+        let after = after
+            .iter()
+            .find(|app| app.app() == status.app())
+            .context("关闭后无法读取应用状态")?;
+        if after.is_running() || after.problem().is_some() {
+            return Err(error).context(format!(
+                "无法结束 {} 进程树，请检查应用是否以管理员身份运行，以及当前账户的结束进程权限",
+                status.app().name()
+            ));
+        }
+    }
     Ok(())
 }
 

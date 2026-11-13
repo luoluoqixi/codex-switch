@@ -160,9 +160,14 @@ pub(crate) fn perform(app: DesktopApp, action: AppAction, paths: &[String; 1]) -
             );
         }
         if !matches!(action, AppAction::Open) && before.is_running() {
-            platform::close(&before)?;
-            wait_for(app, paths, false)
-                .context("应用尚未退出，请处理应用内的提示或手动退出后重试")?;
+            platform::close(&before, paths)?;
+            wait_for(app, paths, false).with_context(|| {
+                if cfg!(target_os = "windows") {
+                    "应用进程尚未全部退出，请检查系统权限或是否有其他程序自动重新启动该应用"
+                } else {
+                    "应用尚未退出，请处理应用内的提示或手动退出后重试"
+                }
+            })?;
         }
         if !matches!(action, AppAction::Close) {
             platform::launch(&before)?;
@@ -234,7 +239,7 @@ fn output(mut command: Command) -> Result<Vec<u8>> {
         .map_err(|_| anyhow::anyhow!("无法读取系统工具输出"))??;
     anyhow::ensure!(
         status.success(),
-        "系统应用操作失败，请检查应用安装位置和系统权限"
+        "系统应用操作失败（{status}），请检查应用安装位置和系统权限"
     );
     Ok(bytes)
 }

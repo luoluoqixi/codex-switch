@@ -164,9 +164,22 @@ impl Switcher {
                     } else {
                         match action {
                             AppAction::Open => format!("打开 {} 桌面应用", app.name()),
-                            AppAction::Close => format!("退出 {} 桌面应用的所有窗口", app.name()),
+                            AppAction::Close => {
+                                if cfg!(target_os = "windows") {
+                                    format!("强制结束 {} 及其子进程", app.name())
+                                } else {
+                                    format!("退出 {} 桌面应用的所有窗口", app.name())
+                                }
+                            }
                             AppAction::Restart => {
-                                format!("退出并重新打开 {} 桌面应用", app.name())
+                                if cfg!(target_os = "windows") {
+                                    format!(
+                                        "强制结束 {} 及其子进程，等待退出后重新打开",
+                                        app.name()
+                                    )
+                                } else {
+                                    format!("退出并重新打开 {} 桌面应用", app.name())
+                                }
                             }
                         }
                     }

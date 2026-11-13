@@ -77,7 +77,7 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
         .collect()
 }
 
-pub(super) fn close(status: &AppStatus) -> Result<()> {
+pub(super) fn close(status: &AppStatus, _paths: &[String; 1]) -> Result<()> {
     const SCRIPT: &str = r#"ObjC.import('AppKit');
 function run(argv) {
     const ids = JSON.parse(argv[0]);
