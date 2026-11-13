@@ -1,5 +1,7 @@
+mod desktop_controls;
 mod dialogs;
 
+use crate::desktop::{self, AppAction, AppStatus, DesktopApp};
 use crate::store::{Profile, Settings, Snapshot, Store};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -7,10 +9,20 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     dialog::DialogFooter,
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu, PopupMenuItem},
     scroll::Scrollbar,
 };
 use gpui_kit::*;
-use std::{cell::Cell, path::PathBuf};
+use std::{cell::Cell, path::PathBuf, time::Duration};
+
+#[cfg(target_os = "macos")]
+const COMMAND_KEYS: [&str; 3] = ["cmd-r", "cmd-b", "cmd-n"];
+#[cfg(not(target_os = "macos"))]
+const COMMAND_KEYS: [&str; 3] = ["ctrl-r", "ctrl-b", "ctrl-n"];
+#[cfg(target_os = "macos")]
+const SHORTCUTS: &str = "↑ ↓ 选择 · Enter 切换 · ⌘R 刷新 · ⌘B 保存 · ⌘N 新建";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUTS: &str = "↑ ↓ 选择 · Enter 切换 · Ctrl+R 刷新 · Ctrl+B 保存 · Ctrl+N 新建";
 
 actions!(
     switcher,
@@ -26,10 +38,10 @@ actions!(
 
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("ctrl-r", Refresh, Some("Switcher")),
+        KeyBinding::new(COMMAND_KEYS[0], Refresh, Some("Switcher")),
         KeyBinding::new("f5", Refresh, Some("Switcher")),
-        KeyBinding::new("ctrl-b", SaveBackup, Some("Switcher")),
-        KeyBinding::new("ctrl-n", NewBackup, Some("Switcher")),
+        KeyBinding::new(COMMAND_KEYS[1], SaveBackup, Some("Switcher")),
+        KeyBinding::new(COMMAND_KEYS[2], NewBackup, Some("Switcher")),
         KeyBinding::new("up", PreviousProfile, Some("Profiles")),
         KeyBinding::new("down", NextProfile, Some("Profiles")),
         KeyBinding::new("enter", SwitchProfile, Some("Profiles")),
@@ -42,10 +54,48 @@ enum Operation {
     Create(String),
     Switch(String),
     Open(String),
+    OpenVersion(String, String),
     Settings(Settings),
     SwitchVersion(String, String),
     DeleteVersion(String, String),
     DeleteProfile(String),
+    Desktop(DesktopApp, AppAction),
+    OpenInstallation(DesktopApp),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ProfileOrder {
+    #[default]
+    Newest,
+    Oldest,
+    Name,
+}
+
+impl ProfileOrder {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Newest => "最新备份优先",
+            Self::Oldest => "最早备份优先",
+            Self::Name => "名称 A–Z",
+        }
+    }
+
+    fn apply(self, profiles: &mut [Profile]) {
+        profiles.sort_by(|a, b| {
+            let time = match self {
+                Self::Newest => b.latest_stamp.cmp(&a.latest_stamp),
+                Self::Oldest => match (a.latest_stamp, b.latest_stamp) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+                Self::Name => std::cmp::Ordering::Equal,
+            };
+            time.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.key.cmp(&b.key))
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -70,7 +120,14 @@ pub(crate) struct Switcher {
     busy: bool,
     selected: Option<String>,
     new_name: Entity<InputState>,
+    profile_order: ProfileOrder,
     version_limit: Entity<InputState>,
+    app_paths: [Entity<InputState>; 1],
+    app_statuses: Vec<AppStatus>,
+    app_error: String,
+    checking_apps: bool,
+    app_revision: u64,
+    _app_monitor: Option<Task<()>>,
     modal: Option<Modal>,
     modal_revision: u64,
     pending_delete: Option<String>,
@@ -114,12 +171,30 @@ impl Switcher {
                 }
             });
         let list_focus = cx.focus_handle().tab_stop(true);
+        let app_paths = std::array::from_fn(|_| cx.new(|cx| InputState::new(window, cx)));
+        let mut subscriptions = vec![subscription, settings_subscription];
+        for input in &app_paths {
+            subscriptions.push(
+                cx.subscribe_in(input, window, |this, _, event, window, cx| {
+                    if matches!(this.modal, Some(Modal::Settings))
+                        && matches!(event, InputEvent::PressEnter { .. })
+                    {
+                        this.save_settings(window, cx);
+                    }
+                    if matches!(event, InputEvent::Change) {
+                        this.dialog_error.clear();
+                        cx.notify();
+                        window.refresh();
+                    }
+                }),
+            );
+        }
         window.focus(&list_focus, cx);
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
             view.update(cx, |this, cx| {
                 if this.busy {
-                    this.message = "正在处理文件，请等待完成后再关闭窗口。".into();
+                    this.message = "正在处理操作，请等待完成后再关闭窗口。".into();
                     cx.notify();
                 }
                 !this.busy
@@ -133,7 +208,14 @@ impl Switcher {
             busy: false,
             selected: None,
             new_name,
+            profile_order: ProfileOrder::default(),
             version_limit,
+            app_paths,
+            app_statuses: Vec::new(),
+            app_error: String::new(),
+            checking_apps: false,
+            app_revision: 0,
+            _app_monitor: None,
             modal: None,
             modal_revision: 0,
             pending_delete: None,
@@ -143,8 +225,16 @@ impl Switcher {
             version_scroll: UniformListScrollHandle::new(),
             message: "正在读取配置…".into(),
             is_error: false,
-            _subscriptions: vec![subscription, settings_subscription],
+            _subscriptions: subscriptions,
         };
+        this._app_monitor = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                if this.update(cx, |this, cx| this.refresh_apps(cx)).is_err() {
+                    break;
+                }
+            }
+        }));
         this.run(Operation::Refresh, window, cx);
         this
     }
@@ -154,6 +244,7 @@ impl Switcher {
             return;
         }
         self.busy = true;
+        self.app_revision += 1;
         self.is_error = false;
         let close_on_success = matches!(
             operation,
@@ -166,12 +257,16 @@ impl Switcher {
             Operation::Create(_) => "正在新建备份…".into(),
             Operation::Switch(_) => "正在备份并切换配置…".into(),
             Operation::Open(_) => "正在打开目录…".into(),
+            Operation::OpenVersion(_, _) => "正在打开版本目录…".into(),
             Operation::Settings(_) => "正在保存设置并清理旧版本…".into(),
             Operation::SwitchVersion(_, _) => "正在备份并切换到所选版本…".into(),
             Operation::DeleteVersion(_, _) => "正在删除备份版本…".into(),
             Operation::DeleteProfile(_) => "正在删除备份目录…".into(),
+            Operation::Desktop(app, action) => format!("正在{} {}…", action.label(), app.name()),
+            Operation::OpenInstallation(_) => "正在定位 ChatGPT 应用…".into(),
         };
         let store = self.store.clone();
+        let app_paths = self.snapshot.settings.app_paths();
         let job = cx.background_spawn(async move {
             let result = match operation {
                 Operation::Refresh => Ok(Outcome::default()),
@@ -194,6 +289,12 @@ impl Switcher {
                     reveal: Some(path),
                     ..Default::default()
                 }),
+                Operation::OpenVersion(name, id) => {
+                    store.version_directory(&name, &id).map(|path| Outcome {
+                        reveal: Some(path),
+                        ..Default::default()
+                    })
+                }
                 Operation::Settings(settings) => {
                     store.save_settings(&settings).map(|message| Outcome {
                         message,
@@ -220,6 +321,17 @@ impl Switcher {
                         ..Default::default()
                     })
                 }
+                Operation::Desktop(app, action) => {
+                    desktop::perform(app, action, &app_paths).map(|message| Outcome {
+                        message,
+                        ..Default::default()
+                    })
+                }
+                Operation::OpenInstallation(app) => desktop::installation_path(app, &app_paths)
+                    .map(|path| Outcome {
+                        reveal: Some(path),
+                        ..Default::default()
+                    }),
             };
             (result, store.load())
         });
@@ -251,7 +363,8 @@ impl Switcher {
                     }
                 }
                 match snapshot {
-                    Ok(snapshot) => {
+                    Ok(mut snapshot) => {
+                        this.profile_order.apply(&mut snapshot.profiles);
                         if !snapshot
                             .profiles
                             .iter()
@@ -265,6 +378,7 @@ impl Switcher {
                                 .map(|p| p.key.clone());
                         }
                         this.snapshot = snapshot;
+                        this.scroll_to_selected();
                         this.loaded = true;
                     }
                     Err(error) => {
@@ -278,6 +392,7 @@ impl Switcher {
                 }
                 cx.notify();
                 window.refresh();
+                this.refresh_apps(cx);
             });
         })
         .detach();
@@ -290,6 +405,51 @@ impl Switcher {
             .profiles
             .iter()
             .find(|p| Some(&p.key) == self.selected.as_ref())
+    }
+
+    fn scroll_to_selected(&self) {
+        if let Some(index) = self
+            .snapshot
+            .profiles
+            .iter()
+            .position(|profile| Some(&profile.key) == self.selected.as_ref())
+        {
+            self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
+        }
+    }
+
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let order = self.profile_order;
+        Button::new("profile-order")
+            .outline()
+            .small()
+            .label(order.label())
+            .icon(IconName::ChevronDown)
+            .accessibility_label("配置列表排序方式")
+            .disabled(!self.loaded || self.busy)
+            .dropdown_menu(move |mut menu, _, _| {
+                for choice in [
+                    ProfileOrder::Newest,
+                    ProfileOrder::Oldest,
+                    ProfileOrder::Name,
+                ] {
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(choice.label())
+                            .checked(choice == order)
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| {
+                                    this.profile_order = choice;
+                                    choice.apply(&mut this.snapshot.profiles);
+                                    this.scroll_to_selected();
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
     }
 
     fn can_backup(&self) -> bool {
@@ -639,64 +799,7 @@ impl Render for Switcher {
             .on_action(
                 cx.listener(|this, _: &NewBackup, window, cx| this.show_new_dialog(window, cx)),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_0p5()
-                            .child(div().text_lg().font_semibold().child("Codex Switch"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .truncate()
-                                    .child(self.store.root().display().to_string()),
-                            ),
-                    )
-                    .child(
-                        Button::new("open-root")
-                            .ghost()
-                            .small()
-                            .icon(IconName::FolderOpen)
-                            .accessibility_label("打开 Codex 配置目录")
-                            .tooltip("打开 Codex 配置目录")
-                            .on_click(
-                                cx.listener(|this, _, _, cx| cx.reveal_path(this.store.root())),
-                            ),
-                    )
-                    .child(
-                        Button::new("settings")
-                            .ghost()
-                            .small()
-                            .label("设置…")
-                            .disabled(self.busy || !self.loaded)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_management_dialog(Modal::Settings, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("refresh")
-                            .ghost()
-                            .small()
-                            .label("刷新")
-                            .icon(IconName::RefreshCw)
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.run(Operation::Refresh, window, cx)
-                            })),
-                    ),
-            )
+            .child(self.render_header(cx))
             .child(
                 div()
                     .flex()
@@ -731,6 +834,7 @@ impl Render for Switcher {
                             .flex_1()
                             .child(format!("配置目录 · {count}")),
                     )
+                    .child(self.render_sort_menu(cx))
                     .child(
                         Button::new("new-backup")
                             .outline()
@@ -831,7 +935,11 @@ impl Render for Switcher {
                                     .small()
                                     .label("保存备份")
                                     .disabled(backup_disabled)
-                                    .tooltip("将当前文件保存到选中的配置目录（Ctrl+B）")
+                                    .tooltip(if cfg!(target_os = "macos") {
+                                        "将当前文件保存到选中的配置目录（⌘B）"
+                                    } else {
+                                        "将当前文件保存到选中的配置目录（Ctrl+B）"
+                                    })
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.backup(window, cx)),
                                     ),
@@ -897,7 +1005,7 @@ impl Render for Switcher {
                         muted
                     })
                     .child(if self.message.is_empty() {
-                        "↑ ↓ 选择 · Enter 切换 · Ctrl+B 保存 · Ctrl+N 新建".into()
+                        SHORTCUTS.into()
                     } else {
                         self.message.clone()
                     }),

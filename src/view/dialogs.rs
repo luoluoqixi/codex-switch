@@ -1,5 +1,6 @@
 use super::*;
 use crate::store::BackupVersion;
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::prelude::FluentBuilder;
 
 impl Switcher {
@@ -10,7 +11,18 @@ impl Switcher {
         let count = self.version_limit.read(cx).value().trim().parse::<usize>();
         match count {
             Ok(max_versions) if (1..=1000).contains(&max_versions) => {
-                self.run(Operation::Settings(Settings { max_versions }), window, cx);
+                let paths = self
+                    .app_paths
+                    .each_ref()
+                    .map(|input| input.read(cx).value().trim().trim_matches('"').to_string());
+                self.run(
+                    Operation::Settings(Settings {
+                        max_versions,
+                        chatgpt_app_path: paths[0].clone(),
+                    }),
+                    window,
+                    cx,
+                );
             }
             _ => {
                 self.dialog_error = "请输入 1–1000 之间的整数。".into();
@@ -94,6 +106,13 @@ impl Switcher {
                 let count = self.snapshot.settings.max_versions.to_string();
                 self.version_limit
                     .update(cx, |input, cx| input.set_value(count, window, cx));
+                for (input, value) in self
+                    .app_paths
+                    .iter()
+                    .zip(self.snapshot.settings.app_paths())
+                {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
             } else {
                 self.version_scroll.scroll_to_item(0, ScrollStrategy::Top);
             }
@@ -122,7 +141,7 @@ impl Switcher {
                             .disabled(busy).loading(busy).on_click(move |_, window, cx| {
                                 let _ = save.update(cx, |this, cx| this.save_settings(window, cx));
                             }));
-                        ("全局设置".to_string(), div().flex().flex_col().gap_3()
+                        ("全局设置".to_string(), div().flex().flex_col().gap_2()
                             .child(div().font_semibold().child("备份"))
                             .child(div().text_sm().child("每个配置保留的版本数"))
                             .child(Input::new(&this.version_limit).id("max-versions")
@@ -131,32 +150,18 @@ impl Switcher {
                                 .child("默认 10，范围 1–1000。适用于所有配置及自动备份。保存设置后立即清理超出的旧版本，以后每次备份也会自动清理。"))
                             .child(div().text_xs().text_color(cx.theme().warning)
                                 .child("清理的旧版本无法恢复，当前配置文件会保留。"))
+                            .child(div().font_semibold().mt_2().child("桌面应用"))
+                            .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                                .child(if cfg!(target_os = "macos") { "留空自动查找已安装的应用，也可指定 .app 的绝对路径，例如 /Applications/ChatGPT.app。" } else { "留空自动查找开始菜单中的应用，也可指定 ChatGPT.exe 的完整路径。" }))
+                            .child(div().text_sm().child("ChatGPT 应用路径（可选）"))
+                            .child(Input::new(&this.app_paths[0]).id("chatgpt-app-path").aria_label("ChatGPT 应用路径，留空自动查找").disabled(busy))
                             .into_any_element())
                     }
                     Modal::Versions(name) => {
-                        let name = name.clone();
-                        let count = this.snapshot.profiles.iter().find(|p| p.key == name)
+                        let count = this.snapshot.profiles.iter().find(|p| p.key == *name)
                             .map_or(0, |p| p.versions.len());
                         let title = format!("历史版本 · {name} · {count} 个");
-                        let list_view = view.clone();
-                        let body = div().flex().flex_col().gap_2()
-                            .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                                .child("按时间从新到旧排列。切换前自动备份当前文件；删除版本不会改动当前配置。"))
-                            .child(if count == 0 {
-                                div().p_4().text_sm().child("此配置暂无备份版本，可关闭后保存备份。").into_any_element()
-                            } else {
-                                div().relative().w_full().h_48()
-                                    .child(uniform_list("backup-versions", count, move |range, _, cx| {
-                                        let Some(entity) = list_view.upgrade() else { return Vec::new(); };
-                                        entity.update(cx, |this, cx| {
-                                            let Some(profile) = this.snapshot.profiles.iter().find(|p| p.key == name) else { return Vec::new(); };
-                                            range.map(|ix| this.render_version(&name, &profile.versions[ix], cx).into_any_element()).collect()
-                                        })
-                                    }).w_full().h_full().track_scroll(&this.version_scroll))
-                                    .child(Scrollbar::vertical(&this.version_scroll).viewport_from_layout())
-                                    .into_any_element()
-                            });
-                        (title, body.into_any_element())
+                        (title, div().into_any_element())
                     }
                     _ => (String::new(), div().into_any_element()),
                 };
@@ -171,13 +176,28 @@ impl Switcher {
                         }
                         false
                     })
-                    .child(body)
-                    .children((!this.dialog_error.is_empty()).then(|| {
-                        div().text_sm().text_color(cx.theme().danger).child(this.dialog_error.clone())
-                    }))
-                    .children((this.dialog_error.is_empty() && !this.message.is_empty()).then(|| {
-                        div().text_xs().text_color(cx.theme().muted_foreground).child(this.message.clone())
-                    }))
+                    .map(|dialog| {
+                        if let Modal::Versions(name) = &modal {
+                            let name = name.clone();
+                            let view = view.clone();
+                            // A virtual list owns its scrolling. Avoid Dialog's automatic
+                            // scroll wrapper around children, which creates a second viewport.
+                            dialog.content(move |content, window, cx| {
+                                let Some(entity) = view.upgrade() else { return content; };
+                                content.min_h_0().overflow_hidden().child(
+                                    entity.read(cx).render_version_body(&name, view.clone(), window, cx)
+                                )
+                            })
+                        } else {
+                            dialog.child(body)
+                                .children((!this.dialog_error.is_empty()).then(|| {
+                                    div().text_sm().text_color(cx.theme().danger).child(this.dialog_error.clone())
+                                }))
+                                .children((this.dialog_error.is_empty() && !this.message.is_empty()).then(|| {
+                                    div().text_xs().text_color(cx.theme().muted_foreground).child(this.message.clone())
+                                }))
+                        }
+                    })
                     .footer(footer)
                     .on_close(move |_, _, cx| {
                         let view = close.clone();
@@ -194,6 +214,101 @@ impl Switcher {
         cx.notify();
     }
 
+    fn render_version_body(
+        &self,
+        name: &str,
+        view: WeakEntity<Self>,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement {
+        let count = self
+            .snapshot
+            .profiles
+            .iter()
+            .find(|p| p.key == name)
+            .map_or(0, |p| p.versions.len());
+        let name = name.to_string();
+        // Leave room for the title, help, feedback and footer on smaller windows.
+        let height = (window.viewport_size().height - window.rem_size() * 14.)
+            .clamp(window.rem_size() * 4., window.rem_size() * 12.);
+        div()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "按时间从新到旧排列。切换前自动备份当前文件；删除版本不会改动当前配置。",
+                    ),
+            )
+            .child(if count == 0 {
+                div()
+                    .p_4()
+                    .text_sm()
+                    .child("此配置暂无备份版本，可关闭后保存备份。")
+                    .into_any_element()
+            } else {
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .h(height)
+                    .flex_shrink_0()
+                    .child(
+                        uniform_list("backup-versions", count, move |range, _, cx| {
+                            let Some(entity) = view.upgrade() else {
+                                return Vec::new();
+                            };
+                            entity.update(cx, |this, cx| {
+                                let Some(profile) =
+                                    this.snapshot.profiles.iter().find(|p| p.key == name)
+                                else {
+                                    return Vec::new();
+                                };
+                                range
+                                    .filter_map(|ix| profile.versions.get(ix))
+                                    .map(|version| {
+                                        this.render_version(&name, version, cx).into_any_element()
+                                    })
+                                    .collect()
+                            })
+                        })
+                        .size_full()
+                        .min_h_0()
+                        .pr_4()
+                        .track_scroll(&self.version_scroll),
+                    )
+                    // Pin the overlay to the viewport, not the next normal-flow position.
+                    // Use the list handle's bounds so painting and dragging share its geometry.
+                    .child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::vertical(&self.version_scroll)
+                                .id("backup-versions-scrollbar")
+                                .mode(ScrollbarMode::Always),
+                        ),
+                    )
+                    .into_any_element()
+            })
+            .children((!self.dialog_error.is_empty()).then(|| {
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(self.dialog_error.clone())
+            }))
+            .children(
+                (self.dialog_error.is_empty() && !self.message.is_empty()).then(|| {
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.message.clone())
+                }),
+            )
+    }
+
     fn render_version(
         &self,
         name: &str,
@@ -207,6 +322,8 @@ impl Switcher {
         let delete_name = name.to_string();
         let delete_id = version.id.clone();
         let cancel_id = version.id.clone();
+        let folder_name = name.to_string();
+        let folder_id = version.id.clone();
         div()
             .flex()
             .items_center()
@@ -303,6 +420,22 @@ impl Switcher {
                             cx.notify();
                             window.refresh();
                         }
+                    })),
+            )
+            .child(
+                Button::new(SharedString::from(format!("folder-version:{}", version.id)))
+                    .ghost()
+                    .small()
+                    .icon(IconName::FolderOpen)
+                    .accessibility_label(format!("打开 {} 的 {} 版本目录", name, version.time))
+                    .tooltip("打开此版本的备份目录")
+                    .disabled(unavailable)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.run(
+                            Operation::OpenVersion(folder_name.clone(), folder_id.clone()),
+                            window,
+                            cx,
+                        );
                     })),
             )
     }

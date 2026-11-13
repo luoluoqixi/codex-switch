@@ -24,6 +24,7 @@ pub(crate) struct Profile {
     pub key: String,
     pub name: String,
     pub time: String,
+    pub latest_stamp: Option<u128>,
     pub version_count: usize,
     pub summary: Summary,
     pub problem: Option<String>,
@@ -44,11 +45,21 @@ pub(crate) struct BackupVersion {
 #[derive(Clone)]
 pub(crate) struct Settings {
     pub max_versions: usize,
+    pub chatgpt_app_path: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { max_versions: 10 }
+        Self {
+            max_versions: 10,
+            chatgpt_app_path: String::new(),
+        }
+    }
+}
+
+impl Settings {
+    pub fn app_paths(&self) -> [String; 1] {
+        [self.chatgpt_app_path.clone()]
     }
 }
 
@@ -101,6 +112,27 @@ impl Store {
         if !metadata.is_dir() || metadata.is_symlink() {
             bail!("配置目录无效，请刷新列表。");
         }
+        Ok(path)
+    }
+
+    pub fn version_directory(&self, name: &str, id: &str) -> Result<PathBuf> {
+        anyhow::ensure!(
+            !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()),
+            "备份版本标识无效"
+        );
+        let folder = self.profile_directory(name)?;
+        let path = folder.join(id);
+        let metadata = fs::symlink_metadata(&path).context("备份版本已不存在，请刷新后重试")?;
+        anyhow::ensure!(
+            metadata.is_dir() && !metadata.is_symlink(),
+            "备份版本目录无效"
+        );
+        let parent = fs::canonicalize(&folder).context("无法确认配置目录")?;
+        let resolved = fs::canonicalize(&path).context("无法确认版本目录")?;
+        anyhow::ensure!(
+            resolved.parent() == Some(parent.as_path()),
+            "备份版本目录超出预期范围"
+        );
         Ok(path)
     }
 
@@ -278,6 +310,7 @@ impl Store {
                 time: latest
                     .map(|v| display_time(v.stamp))
                     .unwrap_or_else(|| "尚无版本".into()),
+                latest_stamp: latest.map(|v| v.stamp),
                 version_count: versions.len(),
                 summary: summary.unwrap_or_default(),
                 problem,
@@ -286,8 +319,6 @@ impl Store {
                 versions: history,
             });
         }
-        // Keep names stable while saving versions, rather than reordering rows.
-        snapshot.profiles.sort_by_key(|a| a.name.to_lowercase());
         Ok(snapshot)
     }
 
@@ -402,7 +433,7 @@ impl Store {
             None => "切换失败".into(),
         })?;
         Ok(format!(
-            "已切换到 {name}（{}）。重新打开 Codex 或新建会话以加载配置。",
+            "已切换到 {name}（{}）。重新打开 ChatGPT 或新建会话以加载配置。",
             display_time(selected.stamp)
         ))
     }
@@ -416,6 +447,7 @@ impl Store {
         anyhow::ensure!((1..=1000).contains(&count), "备份保留数量须为 1–1000");
         Ok(Settings {
             max_versions: count as usize,
+            chatgpt_app_path: value["chatgptAppPath"].as_str().unwrap_or_default().into(),
         })
     }
 
@@ -424,6 +456,7 @@ impl Store {
             (1..=1000).contains(&settings.max_versions),
             "备份保留数量须为 1–1000"
         );
+        crate::desktop::validate_paths(&settings.app_paths())?;
         let _lock = self.lock()?;
         // Keep unknown keys so future global settings can evolve independently.
         let path = self.backups().join("settings.json");
@@ -434,6 +467,11 @@ impl Store {
             .unwrap_or_else(|| json!({}));
         anyhow::ensure!(value.is_object(), "全局设置格式无效");
         value["maxVersions"] = json!(settings.max_versions);
+        value
+            .as_object_mut()
+            .context("全局设置格式无效")?
+            .remove("codexAppPath");
+        value["chatgptAppPath"] = json!(settings.chatgpt_app_path);
         replace_all(vec![(path, serde_json::to_vec_pretty(&value)?)], |_| Ok(()))?;
         for name in self.groups()?.keys() {
             self.prune_versions(name, settings.max_versions)
