@@ -874,7 +874,12 @@ dependencies = [
 name = "codex-switch"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
  "gpui-kit",
+ "serde_json",
+ "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]
