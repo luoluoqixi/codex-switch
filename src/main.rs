@@ -3,12 +3,25 @@
     windows_subsystem = "windows"
 )]
 
+mod app_assets;
 mod desktop;
+mod native_prompt;
+mod shell;
+mod startup;
 mod store;
 mod view;
+mod window_placement;
 
 use gpui_kit::*;
 use std::path::PathBuf;
+
+pub(crate) const APP_NAME: &str = "Codex Switch";
+pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const APP_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+
+pub(crate) fn app_title() -> String {
+    format!("{APP_NAME} - {APP_VERSION}")
+}
 
 fn config_directory() -> anyhow::Result<PathBuf> {
     let mut args = std::env::args_os().skip(1);
@@ -33,34 +46,18 @@ fn config_directory() -> anyhow::Result<PathBuf> {
 
 fn main() -> anyhow::Result<()> {
     let store = store::Store::new(config_directory()?);
-    application().with_assets(assets::Assets).run(move |cx| {
+    // Windows otherwise quits when its last window closes, even if a tray icon
+    // and application-owned state are still alive. Debug and release share this.
+    let app = application()
+        .with_assets(app_assets::AppAssets)
+        .with_quit_mode(QuitMode::Explicit);
+    app.on_reopen(|cx| {
+        shell::show_main(cx);
+    });
+    app.run(move |cx| {
         init(cx);
         view::bind_keys(cx);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        // Window bounds are platform geometry; all content uses rem-based sizing.
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(760.), px(480.)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(640.), px(380.))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Codex Switch".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        open_window(options, cx, |window, cx| {
-            cx.new(|cx| view::Switcher::new(store, window, cx))
-        })
-        .expect("无法打开 Codex Switch 窗口");
-        cx.activate(true);
+        shell::start(store, cx);
     });
     Ok(())
 }

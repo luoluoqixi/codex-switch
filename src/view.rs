@@ -1,28 +1,31 @@
+mod about_window;
+mod auxiliary_window;
+mod config_editor;
 mod desktop_controls;
 mod dialogs;
+mod history_window;
+mod new_backup_window;
+mod settings_window;
 
 use crate::desktop::{self, AppAction, AppStatus, DesktopApp};
 use crate::store::{Profile, Settings, Snapshot, Store};
+use auxiliary_window::WindowKind;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Disableable, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
-    dialog::DialogFooter,
+    checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     scroll::Scrollbar,
 };
 use gpui_kit::*;
-use std::{cell::Cell, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 #[cfg(target_os = "macos")]
 const COMMAND_KEYS: [&str; 3] = ["cmd-r", "cmd-b", "cmd-n"];
 #[cfg(not(target_os = "macos"))]
 const COMMAND_KEYS: [&str; 3] = ["ctrl-r", "ctrl-b", "ctrl-n"];
-#[cfg(target_os = "macos")]
-const SHORTCUTS: &str = "↑ ↓ 选择 · Enter 切换 · ⌘R 刷新 · ⌘B 保存 · ⌘N 新建";
-#[cfg(not(target_os = "macos"))]
-const SHORTCUTS: &str = "↑ ↓ 选择 · Enter 切换 · Ctrl+R 刷新 · Ctrl+B 保存 · Ctrl+N 新建";
 
 actions!(
     switcher,
@@ -32,7 +35,9 @@ actions!(
         NewBackup,
         PreviousProfile,
         NextProfile,
-        SwitchProfile
+        SwitchProfile,
+        SaveConfigFile,
+        CloseAuxiliary
     ]
 );
 
@@ -45,6 +50,16 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PreviousProfile, Some("Profiles")),
         KeyBinding::new("down", NextProfile, Some("Profiles")),
         KeyBinding::new("enter", SwitchProfile, Some("Profiles")),
+        KeyBinding::new("escape", CloseAuxiliary, Some("AuxiliaryWindow")),
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-s"
+            } else {
+                "ctrl-s"
+            },
+            SaveConfigFile,
+            Some("ConfigEditor"),
+        ),
     ]);
 }
 
@@ -58,16 +73,18 @@ enum Operation {
     Settings(Settings),
     SwitchVersion(String, String),
     DeleteVersion(String, String),
-    DeleteProfile(String),
+    DeleteProfiles(Vec<String>),
     Desktop(DesktopApp, AppAction),
     OpenInstallation(DesktopApp),
+    ReadConfig,
+    SaveConfig(String, String),
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum ProfileOrder {
-    #[default]
     Newest,
     Oldest,
+    #[default]
     Name,
 }
 
@@ -98,19 +115,21 @@ impl ProfileOrder {
     }
 }
 
-#[derive(Clone)]
-enum Modal {
-    New,
-    Settings,
-    Versions(String),
-    Delete(String),
+struct OperationFinished {
+    origin: Option<AnyWindowHandle>,
+    success: bool,
+    close_window: bool,
+    message: String,
 }
+
+impl EventEmitter<OperationFinished> for Switcher {}
 
 #[derive(Default)]
 struct Outcome {
     message: String,
     selected: Option<String>,
     reveal: Option<PathBuf>,
+    config: Option<String>,
 }
 
 pub(crate) struct Switcher {
@@ -119,113 +138,76 @@ pub(crate) struct Switcher {
     loaded: bool,
     busy: bool,
     selected: Option<String>,
-    new_name: Entity<InputState>,
     profile_order: ProfileOrder,
-    version_limit: Entity<InputState>,
-    app_paths: [Entity<InputState>; 1],
+    auxiliary_windows: Vec<(WindowKind, AnyWindowHandle)>,
     app_statuses: Vec<AppStatus>,
     app_error: String,
     checking_apps: bool,
     app_revision: u64,
     _app_monitor: Option<Task<()>>,
-    modal: Option<Modal>,
-    modal_revision: u64,
-    pending_delete: Option<String>,
-    dialog_error: String,
+    prompt_open: bool,
+    multi_select: bool,
+    checked_profiles: BTreeSet<String>,
+    editor_window: Option<WeakEntity<auxiliary_window::AuxiliaryWindow>>,
     list_focus: FocusHandle,
     scroll: UniformListScrollHandle,
-    version_scroll: UniformListScrollHandle,
     message: String,
     is_error: bool,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl Switcher {
-    pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let new_name =
-            cx.new(|cx| InputState::new(window, cx).placeholder("例如：官方、工作、备用"));
-        let subscription = cx.subscribe_in(&new_name, window, |this, _, event, window, cx| {
-            if matches!(this.modal, Some(Modal::New))
-                && matches!(event, InputEvent::PressEnter { .. })
-            {
-                this.create_profile(window, cx);
-            }
-            if matches!(event, InputEvent::Change) {
-                this.dialog_error.clear();
-                cx.notify();
-                window.refresh();
-            }
-        });
-        let version_limit = cx.new(|cx| InputState::new(window, cx));
-        let settings_subscription =
-            cx.subscribe_in(&version_limit, window, |this, _, event, window, cx| {
-                if matches!(this.modal, Some(Modal::Settings))
-                    && matches!(event, InputEvent::PressEnter { .. })
-                {
-                    this.save_settings(window, cx);
-                }
-                if matches!(event, InputEvent::Change) {
-                    this.dialog_error.clear();
-                    cx.notify();
-                    window.refresh();
-                }
-            });
-        let list_focus = cx.focus_handle().tab_stop(true);
-        let app_paths = std::array::from_fn(|_| cx.new(|cx| InputState::new(window, cx)));
-        let mut subscriptions = vec![subscription, settings_subscription];
-        for input in &app_paths {
-            subscriptions.push(
-                cx.subscribe_in(input, window, |this, _, event, window, cx| {
-                    if matches!(this.modal, Some(Modal::Settings))
-                        && matches!(event, InputEvent::PressEnter { .. })
-                    {
-                        this.save_settings(window, cx);
-                    }
-                    if matches!(event, InputEvent::Change) {
-                        this.dialog_error.clear();
-                        cx.notify();
-                        window.refresh();
-                    }
-                }),
-            );
+    pub(crate) fn operation_pending(&self) -> bool {
+        self.busy || self.prompt_open
+    }
+
+    pub(crate) fn exit_on_close(&self) -> bool {
+        self.snapshot.settings.exit_on_close
+    }
+
+    pub(crate) fn main_focus(&self) -> FocusHandle {
+        self.list_focus.clone()
+    }
+
+    pub(crate) fn profiles(&self) -> &[Profile] {
+        &self.snapshot.profiles
+    }
+
+    pub(crate) fn show_settings(&mut self, cx: &mut Context<Self>) {
+        if self.loaded && !self.operation_pending() {
+            self.show_auxiliary_window(WindowKind::Settings, None, cx);
         }
+    }
+
+    pub(crate) fn report_shell_error(&mut self, message: String, cx: &mut Context<Self>) {
+        self.message = message;
+        self.is_error = true;
+        cx.notify();
+    }
+
+    pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let list_focus = cx.focus_handle().tab_stop(true);
         window.focus(&list_focus, cx);
-        let view = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
-            view.update(cx, |this, cx| {
-                if this.busy {
-                    this.message = "正在处理操作，请等待完成后再关闭窗口。".into();
-                    cx.notify();
-                }
-                !this.busy
-            })
-            .unwrap_or(true)
-        });
         let mut this = Self {
             store,
             snapshot: Snapshot::default(),
             loaded: false,
             busy: false,
             selected: None,
-            new_name,
             profile_order: ProfileOrder::default(),
-            version_limit,
-            app_paths,
+            auxiliary_windows: Vec::new(),
             app_statuses: Vec::new(),
             app_error: String::new(),
             checking_apps: false,
             app_revision: 0,
             _app_monitor: None,
-            modal: None,
-            modal_revision: 0,
-            pending_delete: None,
-            dialog_error: String::new(),
+            prompt_open: false,
+            multi_select: false,
+            checked_profiles: BTreeSet::new(),
+            editor_window: None,
             list_focus,
             scroll: UniformListScrollHandle::new(),
-            version_scroll: UniformListScrollHandle::new(),
             message: "正在读取配置…".into(),
             is_error: false,
-            _subscriptions: subscriptions,
         };
         this._app_monitor = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -240,17 +222,25 @@ impl Switcher {
     }
 
     fn run(&mut self, operation: Operation, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        self.run_with_origin(operation, Some(window.window_handle()), cx);
+    }
+
+    fn run_with_origin(
+        &mut self,
+        operation: Operation,
+        origin: Option<AnyWindowHandle>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.prompt_open {
             return;
         }
         self.busy = true;
         self.app_revision += 1;
         self.is_error = false;
-        let close_on_success = matches!(
+        let close_auxiliary = matches!(
             operation,
-            Operation::Create(_) | Operation::Settings(_) | Operation::DeleteProfile(_)
+            Operation::SaveConfig(_, _) | Operation::Create(_)
         );
-        self.dialog_error.clear();
         self.message = match &operation {
             Operation::Refresh => "正在读取配置…".into(),
             Operation::Backup(name) => format!("正在保存到 {name}…"),
@@ -261,9 +251,11 @@ impl Switcher {
             Operation::Settings(_) => "正在保存设置并清理旧版本…".into(),
             Operation::SwitchVersion(_, _) => "正在备份并切换到所选版本…".into(),
             Operation::DeleteVersion(_, _) => "正在删除备份版本…".into(),
-            Operation::DeleteProfile(_) => "正在删除备份目录…".into(),
+            Operation::DeleteProfiles(_) => "正在删除备份目录…".into(),
             Operation::Desktop(app, action) => format!("正在{} {}…", action.label(), app.name()),
             Operation::OpenInstallation(_) => "正在定位 ChatGPT 应用…".into(),
+            Operation::ReadConfig => "正在读取 config.toml…".into(),
+            Operation::SaveConfig(_, _) => "正在保存 config.toml…".into(),
         };
         let store = self.store.clone();
         let app_paths = self.snapshot.settings.app_paths();
@@ -315,8 +307,8 @@ impl Switcher {
                         ..Default::default()
                     })
                 }
-                Operation::DeleteProfile(name) => {
-                    store.delete_profile(&name).map(|message| Outcome {
+                Operation::DeleteProfiles(names) => {
+                    store.delete_profiles(&names).map(|message| Outcome {
                         message,
                         ..Default::default()
                     })
@@ -332,13 +324,26 @@ impl Switcher {
                         reveal: Some(path),
                         ..Default::default()
                     }),
+                Operation::ReadConfig => store.read_config().map(|config| Outcome {
+                    config: Some(config),
+                    ..Default::default()
+                }),
+                Operation::SaveConfig(original, edited) => store
+                    .save_config(&original, &edited)
+                    .map(|message| Outcome {
+                        message,
+                        ..Default::default()
+                    }),
             };
             (result, store.load())
         });
-        cx.spawn_in(window, async move |this, cx| {
+        // Tray actions can outlive all windows. Complete against the retained
+        // application state instead of binding this task to a native window.
+        cx.spawn(async move |this, cx| {
             let (result, snapshot) = job.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update(cx, |this, cx| {
                 this.busy = false;
+                let success = result.is_ok();
                 match result {
                     Ok(outcome) => {
                         this.message = outcome.message;
@@ -348,18 +353,13 @@ impl Switcher {
                         if let Some(path) = outcome.reveal {
                             cx.reveal_path(&path);
                         }
-                        this.pending_delete = None;
-                        if close_on_success {
-                            this.modal = None;
-                            window.close_dialog(cx);
+                        if let Some(config) = outcome.config {
+                            this.show_auxiliary_window(WindowKind::Editor, Some(config), cx);
                         }
                     }
                     Err(error) => {
                         this.is_error = true;
                         this.message = format!("{error:#}");
-                        if this.modal.is_some() {
-                            this.dialog_error = this.message.clone();
-                        }
                     }
                 }
                 match snapshot {
@@ -377,6 +377,8 @@ impl Switcher {
                                 .or_else(|| snapshot.profiles.first())
                                 .map(|p| p.key.clone());
                         }
+                        this.checked_profiles
+                            .retain(|name| snapshot.profiles.iter().any(|p| &p.key == name));
                         this.snapshot = snapshot;
                         this.scroll_to_selected();
                         this.loaded = true;
@@ -384,20 +386,23 @@ impl Switcher {
                     Err(error) => {
                         this.is_error = true;
                         this.message.push_str(&format!(" 无法刷新列表：{error:#}"));
-                        if this.modal.is_some() {
-                            this.dialog_error = this.message.clone();
-                        }
                         this.loaded = false;
                     }
                 }
                 cx.notify();
-                window.refresh();
+                cx.refresh_windows();
                 this.refresh_apps(cx);
+                cx.emit(OperationFinished {
+                    origin,
+                    success,
+                    close_window: success && close_auxiliary,
+                    message: this.message.clone(),
+                });
             });
         })
         .detach();
         cx.notify();
-        window.refresh();
+        cx.refresh_windows();
     }
 
     fn selected_profile(&self) -> Option<&Profile> {
@@ -427,12 +432,12 @@ impl Switcher {
             .label(order.label())
             .icon(IconName::ChevronDown)
             .accessibility_label("配置列表排序方式")
-            .disabled(!self.loaded || self.busy)
+            .disabled(!self.loaded || self.operation_pending())
             .dropdown_menu(move |mut menu, _, _| {
                 for choice in [
+                    ProfileOrder::Name,
                     ProfileOrder::Newest,
                     ProfileOrder::Oldest,
-                    ProfileOrder::Name,
                 ] {
                     let view = view.clone();
                     menu = menu.item(
@@ -453,148 +458,54 @@ impl Switcher {
     }
 
     fn can_backup(&self) -> bool {
-        self.loaded && !self.busy && (self.snapshot.has_config || self.snapshot.has_auth)
+        self.loaded
+            && !self.busy
+            && !self.prompt_open
+            && (self.snapshot.has_config || self.snapshot.has_auth)
     }
 
     fn backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_backup() || self.modal.is_some() {
+        if !self.can_backup() || self.multi_select {
             return;
         }
         if let Some(name) = self.selected.clone() {
-            self.run(Operation::Backup(name), window, cx);
+            self.request_backup(name, window, cx);
+        }
+    }
+
+    pub(crate) fn can_switch_profile(&self, name: &str) -> bool {
+        self.loaded
+            && !self.operation_pending()
+            && self.snapshot.profiles.iter().any(|profile| {
+                profile.key == name
+                    && profile.problem.is_none()
+                    && (!profile.is_current || profile.is_dirty)
+            })
+    }
+
+    fn switch_to(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.can_switch_profile(name) {
+            self.confirm_switch(name.to_string(), None, window, cx);
         }
     }
 
     fn switch_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.loaded || self.modal.is_some() {
+        if self.multi_select {
             return;
         }
-        if let Some(profile) = self.selected_profile()
-            && profile.problem.is_none()
-            && (!profile.is_current || profile.is_dirty)
-        {
-            self.run(Operation::Switch(profile.key.clone()), window, cx);
+        if let Some(name) = self.selected.clone() {
+            self.switch_to(&name, window, cx);
         }
     }
 
-    fn create_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_backup() || !matches!(self.modal, Some(Modal::New)) {
-            return;
+    fn show_new_window(&mut self, cx: &mut Context<Self>) {
+        if self.can_backup() && !self.prompt_open {
+            self.show_auxiliary_window(WindowKind::NewBackup, None, cx);
         }
-        let name = self.new_name.read(cx).value().trim().to_string();
-        if name.is_empty() {
-            return;
-        }
-        self.dialog_error.clear();
-        self.run(Operation::Create(name), window, cx);
-    }
-
-    fn show_new_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_backup() || self.modal.is_some() {
-            return;
-        }
-        self.modal = Some(Modal::New);
-        self.modal_revision += 1;
-        let revision = self.modal_revision;
-        self.dialog_error.clear();
-        self.new_name
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        let view = cx.entity().downgrade();
-        let input = self.new_name.clone();
-        let initial_focus = Cell::new(true);
-        window.open_dialog(cx, move |dialog, window, cx| {
-            let Some(view) = view.upgrade() else {
-                return dialog;
-            };
-            if initial_focus.replace(false) {
-                input.focus_handle(cx).focus(window, cx);
-            }
-            let this = view.read(cx);
-            let busy = this.busy;
-            let error = this.dialog_error.clone();
-            let empty = input.read(cx).value().trim().is_empty();
-            let save_view = view.downgrade();
-            let confirm_view = view.downgrade();
-            let cancel_view = view.downgrade();
-            let close_view = view.downgrade();
-            dialog
-                .title("新建备份")
-                .centered()
-                .overlay_closable(!busy)
-                .keyboard(!busy)
-                .close_button(!busy)
-                .on_cancel(move |_, _, _| !busy)
-                .on_ok(move |_, window, cx| {
-                    let _ = confirm_view.update(cx, |this, cx| this.create_profile(window, cx));
-                    false
-                })
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(div().text_sm().child("配置名称"))
-                        .child(
-                            Input::new(&input)
-                                .id("new-backup-name")
-                                .aria_label("配置名称")
-                                .disabled(busy),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("新建同名目录，并保存当前 config.toml 和 auth.json。"),
-                        )
-                        .children(
-                            (!error.is_empty()).then(|| {
-                                div().text_sm().text_color(cx.theme().danger).child(error)
-                            }),
-                        ),
-                )
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            Button::new("cancel-new")
-                                .label("取消")
-                                .disabled(busy)
-                                .on_click(move |_, window, cx| {
-                                    let _ = cancel_view.update(cx, |this, cx| {
-                                        this.modal = None;
-                                        cx.notify();
-                                    });
-                                    window.close_dialog(cx);
-                                }),
-                        )
-                        .child(
-                            Button::new("create-backup")
-                                .primary()
-                                .label("创建并保存")
-                                .disabled(busy || empty)
-                                .loading(busy)
-                                .on_click(move |_, window, cx| {
-                                    let _ = save_view
-                                        .update(cx, |this, cx| this.create_profile(window, cx));
-                                }),
-                        ),
-                )
-                .on_close(move |_, _, cx| {
-                    let view = close_view.clone();
-                    cx.defer(move |cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            if this.modal_revision == revision {
-                                this.modal = None;
-                                cx.notify();
-                            }
-                        });
-                    });
-                })
-        });
-        cx.notify();
     }
 
     fn move_selection(&mut self, direction: isize, cx: &mut Context<Self>) {
-        if self.busy || self.modal.is_some() || self.snapshot.profiles.is_empty() {
+        if self.busy || self.prompt_open || self.snapshot.profiles.is_empty() {
             return;
         }
         let current = self
@@ -611,9 +522,22 @@ impl Switcher {
         cx.notify();
     }
 
+    fn toggle_checked(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.operation_pending() {
+            return;
+        }
+        if !self.checked_profiles.remove(name) {
+            self.checked_profiles.insert(name.to_string());
+        }
+        cx.notify();
+    }
+
     fn render_profile(&self, profile: &Profile, cx: &mut Context<Self>) -> impl IntoElement {
         let key = profile.key.clone();
         let folder_key = key.clone();
+        let checkbox_key = key.clone();
+        let context_key = key.clone();
+        let view = cx.entity().downgrade();
         let status = if profile.is_current {
             if profile.is_dirty {
                 "使用中 · 与最新不同"
@@ -631,6 +555,7 @@ impl Switcher {
             cx.theme().muted_foreground
         };
         div()
+            .id(SharedString::from(format!("profile-row:{key}")))
             .flex()
             .items_center()
             .gap_1()
@@ -638,15 +563,28 @@ impl Switcher {
             .min_w_0()
             .px_3()
             .py_0p5()
+            .children(self.multi_select.then(|| {
+                Checkbox::new(SharedString::from(format!("check-profile:{checkbox_key}")))
+                    .checked(self.checked_profiles.contains(&checkbox_key))
+                    .accessibility_label(format!("选择备份目录 {}", profile.name))
+                    .disabled(self.operation_pending())
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.toggle_checked(&checkbox_key, cx)),
+                    )
+            }))
             .child(
                 Button::new(SharedString::from(format!("profile:{key}")))
                     .ghost()
                     .small()
-                    .selected(self.selected.as_ref() == Some(&key))
+                    .selected(if self.multi_select {
+                        self.checked_profiles.contains(&key)
+                    } else {
+                        self.selected.as_ref() == Some(&key)
+                    })
                     .flex_1()
                     .min_w_0()
                     .h_12()
-                    .disabled(self.busy)
+                    .disabled(self.operation_pending())
                     .accessibility_label(format!(
                         "选择 {}，{} 个版本，{}",
                         profile.name, profile.version_count, status
@@ -722,24 +660,113 @@ impl Switcher {
                                     ),
                             ),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .tooltip(if self.multi_select {
+                        "勾选或取消选择此备份目录"
+                    } else {
+                        "单击选择，双击切换到最新备份"
+                    })
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if this.busy || this.prompt_open {
+                            return;
+                        }
+                        if this.multi_select {
+                            this.toggle_checked(&key, cx);
+                            return;
+                        }
                         this.selected = Some(key.clone());
                         window.focus(&this.list_focus, cx);
                         cx.notify();
+                        if event.click_count() == 2 {
+                            this.switch_selected(window, cx);
+                        }
                     })),
             )
             .child(
                 Button::new(SharedString::from(format!("folder:{folder_key}")))
                     .ghost()
-                    .small()
                     .icon(IconName::FolderOpen)
                     .accessibility_label(format!("打开 {} 的备份目录", profile.name))
                     .tooltip(format!("打开 {} 的备份目录", profile.name))
-                    .disabled(self.busy)
+                    .disabled(self.operation_pending())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run(Operation::Open(folder_key.clone()), window, cx)
                     })),
             )
+            .context_menu(move |menu, _, cx| {
+                let Some(owner) = view.upgrade() else {
+                    return menu;
+                };
+                let unavailable = owner.read(cx).operation_pending();
+                let backup_disabled = !owner.read(cx).can_backup();
+                let switch_disabled = !owner.read(cx).can_switch_profile(&context_key);
+                let backup_owner = view.clone();
+                let switch_owner = view.clone();
+                let history_owner = view.clone();
+                let folder_owner = view.clone();
+                let delete_owner = view.clone();
+                let backup = context_key.clone();
+                let switch = context_key.clone();
+                let history = context_key.clone();
+                let folder = context_key.clone();
+                let delete = context_key.clone();
+                menu.item(
+                    PopupMenuItem::new(" 保存备份")
+                        .icon(IconName::Save)
+                        .disabled(backup_disabled)
+                        .on_click(move |_, window, cx| {
+                            let _ = backup_owner.update(cx, |this, cx| {
+                                this.request_backup(backup.clone(), window, cx)
+                            });
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(" 切换配置")
+                        .icon(IconName::ArrowLeftRight)
+                        .disabled(switch_disabled)
+                        .on_click(move |_, window, cx| {
+                            let _ = switch_owner
+                                .update(cx, |this, cx| this.switch_to(&switch, window, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(" 历史版本")
+                        .icon(IconName::FolderClock)
+                        .disabled(unavailable)
+                        .on_click(move |_, _, cx| {
+                            let _ = history_owner.update(cx, |this, cx| {
+                                if !this.operation_pending() {
+                                    this.show_auxiliary_window(
+                                        WindowKind::Versions(history.clone()),
+                                        None,
+                                        cx,
+                                    );
+                                }
+                            });
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(" 打开目录")
+                        .icon(IconName::FolderOpen)
+                        .disabled(unavailable)
+                        .on_click(move |_, window, cx| {
+                            let _ = folder_owner.update(cx, |this, cx| {
+                                this.run(Operation::Open(folder.clone()), window, cx)
+                            });
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(" 删除备份")
+                        .icon(IconName::Trash)
+                        .disabled(unavailable)
+                        .on_click(move |_, window, cx| {
+                            let _ = delete_owner.update(cx, |this, cx| {
+                                this.confirm_delete_profiles(vec![delete.clone()], window, cx)
+                            });
+                        }),
+                )
+            })
     }
 }
 
@@ -747,17 +774,23 @@ impl Render for Switcher {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
-        let selected = self.selected_profile();
-        let switch_disabled = self.busy
+        let selected = if self.multi_select {
+            None
+        } else {
+            self.selected_profile()
+        };
+        let switch_disabled = self.operation_pending()
             || !self.loaded
             || selected.is_none_or(|p| p.problem.is_some() || (p.is_current && !p.is_dirty));
         let backup_disabled = !self.can_backup() || selected.is_none();
-        let target = selected
-            .map(|p| format!("保存到：{}", p.name))
-            .unwrap_or_else(|| "先选择目录，或新建备份".into());
-        let help = selected
-            .and_then(|p| p.problem.clone())
-            .unwrap_or_else(|| "切换使用最新版本，并自动备份当前文件".into());
+        let target = if self.multi_select {
+            format!("已选择 {} 个配置目录", self.checked_profiles.len())
+        } else {
+            selected
+                .map(|p| format!("保存到：{}", p.name))
+                .unwrap_or_else(|| "先选择目录，或新建备份".into())
+        };
+        let problem = selected.and_then(|p| p.problem.clone());
         let current = if !self.loaded {
             "尚未读取配置".into()
         } else if !self.snapshot.has_config {
@@ -791,14 +824,12 @@ impl Render for Switcher {
             .text_color(cx.theme().foreground)
             .key_context("Switcher")
             .on_action(cx.listener(|this, _: &Refresh, window, cx| {
-                if this.modal.is_none() {
+                if !this.prompt_open {
                     this.run(Operation::Refresh, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &SaveBackup, window, cx| this.backup(window, cx)))
-            .on_action(
-                cx.listener(|this, _: &NewBackup, window, cx| this.show_new_dialog(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &NewBackup, _, cx| this.show_new_window(cx)))
             .child(self.render_header(cx))
             .child(
                 div()
@@ -809,13 +840,54 @@ impl Render for Switcher {
                     .py_2()
                     .border_b_1()
                     .border_color(border)
-                    .child(div().font_semibold().truncate().child(current))
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(muted)
-                            .truncate()
-                            .child(current_detail),
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(div().font_semibold().truncate().child(current))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .truncate()
+                                            .child(current_detail),
+                                    ),
+                            )
+                            .child(
+                                Button::new("edit-current-config")
+                                    .outline()
+                                    .icon(IconName::FilePen)
+                                    .tooltip("编辑当前 config.toml")
+                                    .flex_shrink_0()
+                                    .disabled(
+                                        self.operation_pending()
+                                            || !self.loaded
+                                            || !self.snapshot.has_config,
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if !this.prompt_open {
+                                            this.open_config_window(window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("open-current-config-directory")
+                                    .outline()
+                                    .icon(IconName::FolderOpen)
+                                    .flex_shrink_0()
+                                    .accessibility_label("打开 config.toml 所在目录")
+                                    .tooltip("打开 config.toml 所在目录")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.reveal_path(this.store.root())
+                                    })),
+                            ),
                     )
                     .children(self.snapshot.warning.clone().map(|warning| {
                         div().text_xs().text_color(cx.theme().danger).child(warning)
@@ -834,17 +906,65 @@ impl Render for Switcher {
                             .flex_1()
                             .child(format!("配置目录 · {count}")),
                     )
+                    .child(
+                        Button::new("multi-select")
+                            .outline()
+                            .small()
+                            .label(if self.multi_select {
+                                "完成"
+                            } else {
+                                "多选"
+                            })
+                            .selected(self.multi_select)
+                            .disabled(
+                                self.operation_pending() || (!self.multi_select && count == 0),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.multi_select = !this.multi_select;
+                                this.checked_profiles.clear();
+                                cx.notify();
+                            })),
+                    )
+                    .children(self.multi_select.then(|| {
+                        Button::new("select-all-profiles")
+                            .ghost()
+                            .small()
+                            .label("全选")
+                            .disabled(
+                                self.operation_pending()
+                                    || count == 0
+                                    || self.checked_profiles.len() == count,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.checked_profiles = this
+                                    .snapshot
+                                    .profiles
+                                    .iter()
+                                    .map(|p| p.key.clone())
+                                    .collect();
+                                cx.notify();
+                            }))
+                    }))
+                    .children(self.multi_select.then(|| {
+                        Button::new("deselect-all-profiles")
+                            .ghost()
+                            .small()
+                            .label("取消全选")
+                            .disabled(self.operation_pending() || self.checked_profiles.is_empty())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.checked_profiles.clear();
+                                cx.notify();
+                            }))
+                    }))
                     .child(self.render_sort_menu(cx))
                     .child(
                         Button::new("new-backup")
                             .outline()
                             .small()
-                            .label("新建备份…")
+                            .tooltip("新建备份…")
                             .icon(IconName::Plus)
                             .disabled(!self.can_backup())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.show_new_dialog(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, _, cx| this.show_new_window(cx))),
                     ),
             )
             .child(
@@ -921,7 +1041,12 @@ impl Render for Switcher {
                             .gap_0p5()
                             .min_w_0()
                             .child(div().truncate().child(target))
-                            .child(div().text_xs().text_color(muted).truncate().child(help)),
+                            .children(problem.map(|problem| {
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().warning)
+                                    .child(problem)
+                            })),
                     )
                     .child(
                         div()
@@ -932,8 +1057,9 @@ impl Render for Switcher {
                             .child(
                                 Button::new("backup")
                                     .outline()
-                                    .small()
-                                    .label("保存备份")
+                                    .icon(IconName::Save)
+                                    .label("备份")
+                                    .tooltip("保存当前备份到选中的配置目录")
                                     .disabled(backup_disabled)
                                     .tooltip(if cfg!(target_os = "macos") {
                                         "将当前文件保存到选中的配置目录（⌘B）"
@@ -947,8 +1073,9 @@ impl Render for Switcher {
                             .child(
                                 Button::new("switch")
                                     .primary()
-                                    .small()
-                                    .label("切换配置")
+                                    .icon(IconName::ArrowLeftRight)
+                                    .label("切换")
+                                    .tooltip("切换到最新版本，并自动备份当前文件")
                                     .disabled(switch_disabled)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.switch_selected(window, cx)
@@ -957,14 +1084,19 @@ impl Render for Switcher {
                             .child(
                                 Button::new("versions")
                                     .outline()
-                                    .small()
-                                    .label("历史版本…")
-                                    .disabled(self.busy || !self.loaded || selected.is_none())
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                    .icon(IconName::FolderClock)
+                                    .label("历史")
+                                    .tooltip("打开历史版本列表")
+                                    .disabled(
+                                        self.operation_pending()
+                                            || !self.loaded
+                                            || selected.is_none(),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         if let Some(name) = this.selected.clone() {
-                                            this.show_management_dialog(
-                                                Modal::Versions(name),
-                                                window,
+                                            this.show_auxiliary_window(
+                                                WindowKind::Versions(name),
+                                                None,
                                                 cx,
                                             );
                                         }
@@ -973,24 +1105,31 @@ impl Render for Switcher {
                             .child(div().flex_1())
                             .child(
                                 Button::new("delete-profile")
-                                    .ghost()
+                                    .danger()
                                     .small()
-                                    .label("删除备份…")
-                                    .text_color(cx.theme().danger)
-                                    .disabled(self.busy || !self.loaded || selected.is_none())
+                                    .icon(IconName::Trash)
+                                    .label(if self.multi_select {
+                                        format!("删除 ({})", self.checked_profiles.len())
+                                    } else {
+                                        "删除".into()
+                                    })
+                                    .tooltip("删除选中的配置目录及其所有版本")
+                                    .disabled(
+                                        self.operation_pending()
+                                            || !self.loaded
+                                            || self.deletion_targets().is_empty(),
+                                    )
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        if let Some(name) = this.selected.clone() {
-                                            this.show_management_dialog(
-                                                Modal::Delete(name),
-                                                window,
-                                                cx,
-                                            );
-                                        }
+                                        this.confirm_delete_profiles(
+                                            this.deletion_targets(),
+                                            window,
+                                            cx,
+                                        );
                                     })),
                             ),
                     ),
             )
-            .child(
+            .children((!self.message.is_empty()).then(|| {
                 div()
                     .id("feedback")
                     .role(Role::Status)
@@ -1004,11 +1143,7 @@ impl Render for Switcher {
                     } else {
                         muted
                     })
-                    .child(if self.message.is_empty() {
-                        SHORTCUTS.into()
-                    } else {
-                        self.message.clone()
-                    }),
-            )
+                    .child(self.message.clone())
+            }))
     }
 }

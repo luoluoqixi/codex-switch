@@ -46,6 +46,8 @@ pub(crate) struct BackupVersion {
 pub(crate) struct Settings {
     pub max_versions: usize,
     pub chatgpt_app_path: String,
+    pub launch_at_login: bool,
+    pub exit_on_close: bool,
 }
 
 impl Default for Settings {
@@ -53,6 +55,8 @@ impl Default for Settings {
         Self {
             max_versions: 10,
             chatgpt_app_path: String::new(),
+            launch_at_login: false,
+            exit_on_close: false,
         }
     }
 }
@@ -322,6 +326,46 @@ impl Store {
         Ok(snapshot)
     }
 
+    pub fn read_config(&self) -> Result<String> {
+        let bytes = read_optional(&self.root.join("config.toml"))?
+            .context("config.toml 已不存在，请刷新后重试")?;
+        String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("config.toml 不是有效的 UTF-8 文件"))
+    }
+
+    pub fn save_config(&self, original: &str, edited: &str) -> Result<String> {
+        if let Err(error) = toml::from_str::<toml::Table>(edited) {
+            // Report the location without echoing source lines that may contain credentials.
+            let offset = error.span().map_or(0, |span| span.start).min(edited.len());
+            let prefix = &edited.as_bytes()[..offset];
+            let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
+            let column = String::from_utf8_lossy(
+                prefix
+                    .rsplit(|&byte| byte == b'\n')
+                    .next()
+                    .unwrap_or_default(),
+            )
+            .chars()
+            .count()
+                + 1;
+            bail!("TOML 格式无效，请检查第 {line} 行、第 {column} 列附近的内容。");
+        }
+        let _lock = self.lock()?;
+        let path = self.root.join("config.toml");
+        anyhow::ensure!(
+            read_optional(&path)?.as_deref() == Some(original.as_bytes()),
+            "config.toml 在编辑期间已被其他程序修改或删除，请重新打开后再编辑；本次修改尚未写入。"
+        );
+        replace_all(vec![(path.clone(), edited.as_bytes().to_vec())], |_| {
+            if fs::read(&path)? != original.as_bytes() {
+                return Err(io::Error::other(
+                    "config.toml 在保存前发生了变化，请重新打开后重试",
+                ));
+            }
+            Ok(())
+        })?;
+        Ok("已保存 config.toml。可重新打开 ChatGPT 或新建会话加载配置。".into())
+    }
+
     pub fn create_profile(&self, name: &str) -> Result<String> {
         let name = name.trim();
         validate_name(name)?;
@@ -448,6 +492,8 @@ impl Store {
         Ok(Settings {
             max_versions: count as usize,
             chatgpt_app_path: value["chatgptAppPath"].as_str().unwrap_or_default().into(),
+            launch_at_login: value["launchAtLogin"].as_bool().unwrap_or(false),
+            exit_on_close: value["exitOnClose"].as_bool().unwrap_or(false),
         })
     }
 
@@ -472,15 +518,21 @@ impl Store {
             .context("全局设置格式无效")?
             .remove("codexAppPath");
         value["chatgptAppPath"] = json!(settings.chatgpt_app_path);
-        replace_all(vec![(path, serde_json::to_vec_pretty(&value)?)], |_| Ok(()))?;
+        value["launchAtLogin"] = json!(settings.launch_at_login);
+        value["exitOnClose"] = json!(settings.exit_on_close);
+        let bytes = serde_json::to_vec_pretty(&value)?;
+        let startup = crate::startup::apply(settings.launch_at_login, self.root())?;
+        if let Err(error) = replace_all(vec![(path, bytes)], |_| Ok(())) {
+            if let Err(rollback) = startup.rollback() {
+                bail!("设置保存失败：{error:#}；无法恢复开机启动设置：{rollback:#}");
+            }
+            return Err(error).context("设置未保存，开机启动设置已恢复");
+        }
         for name in self.groups()?.keys() {
             self.prune_versions(name, settings.max_versions)
                 .context("设置已保存，但清理旧版本失败；请检查目录权限后重试")?;
         }
-        Ok(format!(
-            "设置已保存，每个配置保留最新 {} 个版本。",
-            settings.max_versions
-        ))
+        Ok("设置已保存".to_string())
     }
 
     pub fn delete_version(&self, name: &str, id: &str) -> Result<String> {
@@ -499,8 +551,35 @@ impl Store {
         ))
     }
 
-    pub fn delete_profile(&self, name: &str) -> Result<String> {
+    pub fn delete_profiles(&self, names: &[String]) -> Result<String> {
         let _lock = self.lock()?;
+        anyhow::ensure!(!names.is_empty(), "请选择要删除的备份目录");
+        let names: std::collections::BTreeSet<_> = names.iter().collect();
+        // Resolve all targets before beginning a batch; each removal also checks
+        // the managed root and rejects links in remove_managed_directory.
+        for name in &names {
+            self.profile_directory(name)?;
+        }
+        let mut deleted = 0;
+        let mut failures = Vec::new();
+        for name in names {
+            match self.delete_profile_locked(name) {
+                Ok(()) => deleted += 1,
+                Err(error) => failures.push(format!("{name}：{error:#}")),
+            }
+        }
+        if !failures.is_empty() {
+            bail!(
+                "已完成删除 {deleted} 个目录；以下目录删除未完成：{}。请刷新列表后重试，当前配置文件未改动。",
+                failures.join("；")
+            );
+        }
+        Ok(format!(
+            "已删除 {deleted} 个备份目录及其所有版本，当前配置文件未改动。"
+        ))
+    }
+
+    fn delete_profile_locked(&self, name: &str) -> Result<()> {
         let folder = self.profile_directory(name)?;
         remove_managed_directory(&folder, &self.backups())?;
         if self
@@ -513,9 +592,7 @@ impl Store {
             self.write_state("", "")
                 .context("备份目录已删除，但无法清除当前归属记录")?;
         }
-        Ok(format!(
-            "已删除备份目录“{name}”及其中所有版本，当前配置文件未改动。"
-        ))
+        Ok(())
     }
 
     fn prune_versions(&self, name: &str, limit: usize) -> Result<()> {

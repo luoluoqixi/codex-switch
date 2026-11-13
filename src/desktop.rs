@@ -101,7 +101,7 @@ pub(crate) fn installation_path(app: DesktopApp, paths: &[String; 1]) -> Result<
     Ok(path.to_path_buf())
 }
 
-pub(crate) fn validate_paths(paths: &[String; 1]) -> Result<()> {
+pub(crate) fn validate_paths(paths: &[String]) -> Result<()> {
     for (app, value) in DesktopApp::ALL.into_iter().zip(paths) {
         if value.is_empty() {
             continue;

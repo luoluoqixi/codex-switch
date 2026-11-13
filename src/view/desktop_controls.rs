@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::prelude::FluentBuilder;
 
 impl Switcher {
     pub(super) fn refresh_apps(&mut self, cx: &mut Context<Self>) {
@@ -51,10 +52,16 @@ impl Switcher {
                         div()
                             .flex()
                             .flex_col()
-                            .max_w_48()
+                            .max_w_64()
                             .min_w_0()
                             .gap_0p5()
-                            .child(div().text_lg().font_semibold().child("Codex Switch"))
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_semibold()
+                                    .truncate()
+                                    .child(crate::app_title()),
+                            )
                             .child(
                                 div()
                                     .text_xs()
@@ -68,7 +75,6 @@ impl Switcher {
                     .child(
                         Button::new("open-root")
                             .ghost()
-                            .small()
                             .icon(IconName::FolderOpen)
                             .accessibility_label("打开 Codex 配置目录")
                             .tooltip("打开 Codex 配置目录")
@@ -77,26 +83,23 @@ impl Switcher {
                             ),
                     )
                     .child(
-                        Button::new("settings")
-                            .ghost()
-                            .small()
-                            .label("设置…")
-                            .disabled(self.busy || !self.loaded)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_management_dialog(Modal::Settings, window, cx)
-                            })),
-                    )
-                    .child(
                         Button::new("refresh")
                             .ghost()
-                            .small()
-                            .label("刷新")
                             .icon(IconName::RefreshCw)
-                            .disabled(self.busy)
+                            .accessibility_label("刷新配置列表")
+                            .tooltip(if cfg!(target_os = "macos") {
+                                "刷新配置列表（⌘R / F5）"
+                            } else {
+                                "刷新配置列表（Ctrl+R / F5）"
+                            })
+                            .disabled(self.busy || self.prompt_open)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.run(Operation::Refresh, window, cx)
+                                if !this.prompt_open {
+                                    this.run(Operation::Refresh, window, cx);
+                                }
                             })),
-                    ),
+                    )
+                    .child(self.render_app_menu(cx)),
             )
             .children((!self.app_error.is_empty()).then(|| {
                 div()
@@ -106,11 +109,46 @@ impl Switcher {
             }))
     }
 
+    fn render_app_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        Button::new("app-menu")
+            .ghost()
+            .icon(IconName::Menu)
+            .accessibility_label("应用菜单：设置和关于")
+            .dropdown_menu(move |menu, _, cx| {
+                let Some(owner) = view.upgrade() else {
+                    return menu;
+                };
+                let owner = owner.read(cx);
+                let settings_disabled = owner.busy || !owner.loaded || owner.prompt_open;
+                let settings = view.clone();
+                let about = view.clone();
+                menu.item(
+                    PopupMenuItem::new("设置…")
+                        .disabled(settings_disabled)
+                        .on_click(move |_, _, cx| {
+                            let _ = settings.update(cx, |this, cx| {
+                                if !this.busy && this.loaded && !this.prompt_open {
+                                    this.show_auxiliary_window(WindowKind::Settings, None, cx);
+                                }
+                            });
+                        }),
+                )
+                .separator()
+                .item(PopupMenuItem::new("关于…").on_click(move |_, _, cx| {
+                    let _ = about.update(cx, |this, cx| {
+                        this.show_auxiliary_window(WindowKind::About, None, cx);
+                    });
+                }))
+            })
+    }
+
     fn render_app_controls(&self, app: DesktopApp, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.app_statuses.iter().find(|status| status.app() == app);
         let running = status.is_some_and(AppStatus::is_running);
         let problem = status.and_then(AppStatus::problem);
-        let unavailable = self.busy || !self.loaded || status.is_none() || problem.is_some();
+        let unavailable =
+            self.operation_pending() || !self.loaded || status.is_none() || problem.is_some();
         let label = if problem.is_some() {
             "路径无效"
         } else if running {
@@ -153,9 +191,17 @@ impl Switcher {
                     app.name(),
                     action.label()
                 )))
-                .small()
+                .ghost()
                 .outline()
-                .label(action.label())
+                .when(matches!(action, AppAction::Open), |button| {
+                    button.label(action.label())
+                })
+                .when(matches!(action, AppAction::Close), |button| {
+                    button.icon(IconName::Power)
+                })
+                .when(matches!(action, AppAction::Restart), |button| {
+                    button.icon(IconName::RotateCw)
+                })
                 .disabled(disabled)
                 .accessibility_label(format!("{} {}", action.label(), app.name()))
                 .tooltip(problem.map(str::to_owned).unwrap_or_else(|| {
@@ -166,34 +212,33 @@ impl Switcher {
                             AppAction::Open => format!("打开 {} 桌面应用", app.name()),
                             AppAction::Close => {
                                 if cfg!(target_os = "windows") {
-                                    format!("强制结束 {} 及其子进程", app.name())
+                                    format!("关闭 {}（强制结束应用及其子进程）", app.name())
                                 } else {
-                                    format!("退出 {} 桌面应用的所有窗口", app.name())
+                                    format!("关闭 {}（退出桌面应用的所有窗口）", app.name())
                                 }
                             }
                             AppAction::Restart => {
                                 if cfg!(target_os = "windows") {
                                     format!(
-                                        "强制结束 {} 及其子进程，等待退出后重新打开",
+                                        "重新打开 {}（强制结束应用及其子进程，等待退出后启动）",
                                         app.name()
                                     )
                                 } else {
-                                    format!("退出并重新打开 {} 桌面应用", app.name())
+                                    format!("重新打开 {}（退出后重新启动桌面应用）", app.name())
                                 }
                             }
                         }
                     }
                 }))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    if this.modal.is_none() {
-                        this.run(Operation::Desktop(app, action), window, cx);
+                    if !this.prompt_open {
+                        this.request_desktop_action(app, action, window, cx);
                     }
                 }))
             }))
             .child(
                 Button::new("open-chatgpt-installation")
                     .ghost()
-                    .small()
                     .icon(IconName::FolderOpen)
                     .accessibility_label("在安装目录中选中 ChatGPT 应用")
                     .tooltip(if status.is_some_and(AppStatus::has_installation_path) {
@@ -207,7 +252,7 @@ impl Switcher {
                     })
                     .disabled(unavailable || !status.is_some_and(AppStatus::has_installation_path))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.modal.is_none() {
+                        if !this.prompt_open {
                             this.run(Operation::OpenInstallation(app), window, cx);
                         }
                     })),

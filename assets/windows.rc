@@ -1,0 +1,4 @@
+// GPUI loads the application icon from resource ID 1.
+1 ICON "assets/icon.ico"
+// GPUI already embeds the application manifest, including Common Controls 6.
+// Keep this resource file limited to app-owned resources to avoid duplicate IDs.
