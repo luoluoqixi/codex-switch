@@ -158,7 +158,7 @@ fn dispatch(command: Command, cx: &mut App) {
         && !owner.read(cx).operation_pending()
         && !owner.read(cx).exit_needs_confirmation(cx)
     {
-        cx.quit();
+        owner.update(cx, |owner, cx| owner.shutdown_and_quit(cx));
         return;
     }
     let Some(handle) = show_main(cx) else {

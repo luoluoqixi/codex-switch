@@ -9,6 +9,7 @@ mod native_prompt;
 mod shell;
 mod startup;
 mod store;
+mod themes;
 mod view;
 mod window_placement;
 

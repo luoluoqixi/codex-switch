@@ -130,7 +130,11 @@ pub(crate) fn validate_paths(paths: &[String]) -> Result<()> {
 pub(crate) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        platform::inspect(paths)
+        let statuses = platform::inspect(paths)?;
+        crate::themes::set_expected_executable(
+            statuses.first().and_then(|status| status.path.clone()),
+        );
+        Ok(statuses)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -173,6 +177,7 @@ pub(crate) fn perform(app: DesktopApp, action: AppAction, paths: &[String; 1]) -
             platform::launch(&before)?;
             wait_for(app, paths, true)
                 .context("已发送打开请求，但尚未检测到应用运行；请检查应用或在设置中指定路径")?;
+            crate::themes::verify_launch_endpoint()?;
         }
         Ok(format!("已{} {}。", action.label(), app.name()))
     }

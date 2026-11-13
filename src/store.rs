@@ -46,6 +46,7 @@ pub(crate) struct BackupVersion {
 pub(crate) struct Settings {
     pub max_versions: usize,
     pub chatgpt_app_path: String,
+    pub theme_directory: String,
     pub launch_at_login: bool,
     pub exit_on_close: bool,
 }
@@ -55,6 +56,7 @@ impl Default for Settings {
         Self {
             max_versions: 10,
             chatgpt_app_path: String::new(),
+            theme_directory: String::new(),
             launch_at_login: false,
             exit_on_close: false,
         }
@@ -492,6 +494,7 @@ impl Store {
         Ok(Settings {
             max_versions: count as usize,
             chatgpt_app_path: value["chatgptAppPath"].as_str().unwrap_or_default().into(),
+            theme_directory: value["themeDirectory"].as_str().unwrap_or_default().into(),
             launch_at_login: value["launchAtLogin"].as_bool().unwrap_or(false),
             exit_on_close: value["exitOnClose"].as_bool().unwrap_or(false),
         })
@@ -518,6 +521,7 @@ impl Store {
             .context("全局设置格式无效")?
             .remove("codexAppPath");
         value["chatgptAppPath"] = json!(settings.chatgpt_app_path);
+        value["themeDirectory"] = json!(settings.theme_directory);
         value["launchAtLogin"] = json!(settings.launch_at_login);
         value["exitOnClose"] = json!(settings.exit_on_close);
         let bytes = serde_json::to_vec_pretty(&value)?;

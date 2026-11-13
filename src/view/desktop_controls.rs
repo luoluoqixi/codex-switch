@@ -79,7 +79,9 @@ impl Switcher {
                             .accessibility_label("打开 Codex 配置目录")
                             .tooltip("打开 Codex 配置目录")
                             .on_click(
-                                cx.listener(|this, _, _, cx| cx.reveal_path(this.store.root())),
+                                cx.listener(|this, _, _, cx| {
+                                    cx.open_with_system(this.store.root())
+                                }),
                             ),
                     )
                     .child(

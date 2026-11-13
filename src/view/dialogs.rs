@@ -219,8 +219,31 @@ impl Switcher {
                 cx,
             );
         } else {
-            cx.defer(|cx| cx.quit());
+            self.shutdown_and_quit(cx);
         }
+    }
+
+    pub(crate) fn shutdown_and_quit(&mut self, cx: &mut Context<Self>) {
+        if self.operation_pending() {
+            return;
+        }
+        self.busy = true;
+        self.app_revision += 1;
+        self.message = "正在停止主题并退出…".into();
+        cx.notify();
+        let service = self.theme_service.clone();
+        let job = cx.background_spawn(async move { service.shutdown() });
+        cx.spawn(async move |this, cx| match job.await {
+            Ok(()) => cx.update(|cx| cx.quit()),
+            Err(error) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.busy = false;
+                    this.refresh_themes(cx);
+                    this.show_theme_error(format!("无法完成主题清理：{error:#}"), cx);
+                });
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn exit_needs_confirmation(&self, cx: &App) -> bool {
@@ -285,7 +308,9 @@ impl Switcher {
                         return;
                     }
                     match action {
-                        ConfirmAction::Exit => cx.quit(),
+                        ConfirmAction::Exit => {
+                            owner.update(cx, |owner, cx| owner.shutdown_and_quit(cx))
+                        }
                         ConfirmAction::Operation(operation) => {
                             owner.update(cx, |owner, cx| {
                                 owner.run_with_origin(operation, origin, cx);

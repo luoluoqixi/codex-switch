@@ -100,6 +100,10 @@ pub(super) fn launch(status: &AppStatus) -> Result<()> {
         .context("请在设置中指定 .app 应用路径")?;
     let mut command = Command::new("/usr/bin/open");
     command.arg("-a").arg(path);
+    let theme_arguments = crate::themes::launch_arguments()?;
+    if !theme_arguments.is_empty() {
+        command.arg("--args").args(theme_arguments);
+    }
     output(command).context("无法打开 macOS 应用，请检查设置中的 .app 路径")?;
     Ok(())
 }

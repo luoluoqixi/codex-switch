@@ -231,7 +231,7 @@ impl AuxiliaryWindow {
                 },
             )),
             WindowContent::Settings(form) => {
-                for input in [&form.version_limit, &form.app_path] {
+                for input in [&form.version_limit, &form.app_path, &form.theme_directory] {
                     subscriptions.push(cx.subscribe_in(
                         input,
                         window,

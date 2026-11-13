@@ -6,11 +6,14 @@ mod dialogs;
 mod history_window;
 mod new_backup_window;
 mod settings_window;
+mod theme_controls;
 
 use crate::desktop::{self, AppAction, AppStatus, DesktopApp};
 use crate::store::{Profile, Settings, Snapshot, Store};
+use crate::themes::{ThemeService, ThemeSnapshot};
 use auxiliary_window::WindowKind;
 use gpui_kit::assets::IconName;
+use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
@@ -21,6 +24,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use theme_controls::ThemeChoice;
 
 #[cfg(target_os = "macos")]
 const COMMAND_KEYS: [&str; 3] = ["cmd-r", "cmd-b", "cmd-n"];
@@ -78,6 +82,10 @@ enum Operation {
     OpenInstallation(DesktopApp),
     ReadConfig,
     SaveConfig(String, String),
+    SelectTheme(Option<String>),
+    ImportThemes(Vec<PathBuf>),
+    ThemeTransparency(u8),
+    OpenThemes,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -129,12 +137,21 @@ struct Outcome {
     message: String,
     selected: Option<String>,
     reveal: Option<PathBuf>,
+    open_path: Option<PathBuf>,
     config: Option<String>,
 }
 
 pub(crate) struct Switcher {
     store: Store,
     snapshot: Snapshot,
+    theme_service: ThemeService,
+    themes: ThemeSnapshot,
+    theme_select: Entity<SelectState<Vec<ThemeChoice>>>,
+    checking_themes: bool,
+    theme_select_synced: bool,
+    last_theme_error: Option<String>,
+    pending_theme_error: Option<String>,
+    _theme_subscription: Subscription,
     loaded: bool,
     busy: bool,
     selected: Option<String>,
@@ -187,9 +204,38 @@ impl Switcher {
     pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let list_focus = cx.focus_handle().tab_stop(true);
         window.focus(&list_focus, cx);
+        let theme_select = cx.new(|cx| {
+            SelectState::new(
+                vec![ThemeChoice::off()],
+                Some(gpui_kit::component::IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let theme_subscription = cx.subscribe_in(
+            &theme_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<ThemeChoice>>, window, cx| {
+                let SelectEvent::Confirm(value) = event;
+                let selected = value.as_ref().filter(|value| !value.is_empty()).cloned();
+                if selected != this.themes.selected && !this.operation_pending() {
+                    this.theme_select_synced = false;
+                    this.run(Operation::SelectTheme(selected), window, cx);
+                }
+            },
+        );
+        let theme_service = ThemeService::new(store.root().join("backups/theme-state.json"));
         let mut this = Self {
             store,
             snapshot: Snapshot::default(),
+            theme_service,
+            themes: ThemeSnapshot::default(),
+            theme_select,
+            checking_themes: false,
+            theme_select_synced: false,
+            last_theme_error: None,
+            pending_theme_error: None,
+            _theme_subscription: theme_subscription,
             loaded: false,
             busy: false,
             selected: None,
@@ -212,7 +258,21 @@ impl Switcher {
         this._app_monitor = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
-                if this.update(cx, |this, cx| this.refresh_apps(cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| {
+                        this.refresh_apps(cx);
+                        this.refresh_themes(cx);
+                        if let Some(error) = this.theme_service.take_error() {
+                            this.show_theme_error(error, cx);
+                        }
+                        if !this.prompt_open
+                            && let Some(error) = this.pending_theme_error.take()
+                        {
+                            this.show_theme_error(error, cx);
+                        }
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -235,6 +295,19 @@ impl Switcher {
             return;
         }
         self.busy = true;
+        if matches!(
+            operation,
+            Operation::Refresh
+                | Operation::Settings(_)
+                | Operation::SelectTheme(_)
+                | Operation::ImportThemes(_)
+                | Operation::ThemeTransparency(_)
+                | Operation::OpenThemes
+                | Operation::Desktop(_, AppAction::Open | AppAction::Restart)
+        ) {
+            self.last_theme_error = None;
+            self.pending_theme_error = None;
+        }
         self.app_revision += 1;
         self.is_error = false;
         let close_auxiliary = matches!(
@@ -256,85 +329,132 @@ impl Switcher {
             Operation::OpenInstallation(_) => "正在定位 ChatGPT 应用…".into(),
             Operation::ReadConfig => "正在读取 config.toml…".into(),
             Operation::SaveConfig(_, _) => "正在保存 config.toml…".into(),
+            Operation::SelectTheme(_) => "正在切换主题…".into(),
+            Operation::ImportThemes(_) => "正在导入主题…".into(),
+            Operation::ThemeTransparency(_) => "正在调整主题透明度…".into(),
+            Operation::OpenThemes => "正在打开主题目录…".into(),
         };
         let store = self.store.clone();
         let app_paths = self.snapshot.settings.app_paths();
+        let theme_service = self.theme_service.clone();
+        let theme_directory = self.snapshot.settings.theme_directory.clone();
+        let theme_operation = matches!(
+            operation,
+            Operation::SelectTheme(_)
+                | Operation::ImportThemes(_)
+                | Operation::ThemeTransparency(_)
+                | Operation::OpenThemes
+        );
+        let themed_launch = self.themes.selected.is_some()
+            && matches!(
+                operation,
+                Operation::Desktop(_, AppAction::Open | AppAction::Restart)
+            );
         let job = cx.background_spawn(async move {
-            let result = match operation {
-                Operation::Refresh => Ok(Outcome::default()),
-                Operation::Backup(name) => store.backup(&name).map(|message| Outcome {
-                    message,
-                    selected: Some(name),
-                    ..Default::default()
-                }),
-                Operation::Create(name) => store.create_profile(&name).map(|message| Outcome {
-                    message,
-                    selected: Some(name.trim().into()),
-                    ..Default::default()
-                }),
-                Operation::Switch(name) => store.switch(&name).map(|message| Outcome {
-                    message,
-                    selected: Some(name),
-                    ..Default::default()
-                }),
-                Operation::Open(name) => store.profile_directory(&name).map(|path| Outcome {
-                    reveal: Some(path),
-                    ..Default::default()
-                }),
-                Operation::OpenVersion(name, id) => {
-                    store.version_directory(&name, &id).map(|path| Outcome {
-                        reveal: Some(path),
-                        ..Default::default()
-                    })
-                }
-                Operation::Settings(settings) => {
-                    store.save_settings(&settings).map(|message| Outcome {
-                        message,
-                        ..Default::default()
-                    })
-                }
-                Operation::SwitchVersion(name, id) => {
-                    store.switch_version(&name, &id).map(|message| Outcome {
+            let result =
+                match operation {
+                    Operation::Refresh => Ok(Outcome::default()),
+                    Operation::Backup(name) => store.backup(&name).map(|message| Outcome {
                         message,
                         selected: Some(name),
                         ..Default::default()
-                    })
-                }
-                Operation::DeleteVersion(name, id) => {
-                    store.delete_version(&name, &id).map(|message| Outcome {
+                    }),
+                    Operation::Create(name) => store.create_profile(&name).map(|message| Outcome {
+                        message,
+                        selected: Some(name.trim().into()),
+                        ..Default::default()
+                    }),
+                    Operation::Switch(name) => store.switch(&name).map(|message| Outcome {
                         message,
                         selected: Some(name),
                         ..Default::default()
-                    })
-                }
-                Operation::DeleteProfiles(names) => {
-                    store.delete_profiles(&names).map(|message| Outcome {
-                        message,
-                        ..Default::default()
-                    })
-                }
-                Operation::Desktop(app, action) => {
-                    desktop::perform(app, action, &app_paths).map(|message| Outcome {
-                        message,
-                        ..Default::default()
-                    })
-                }
-                Operation::OpenInstallation(app) => desktop::installation_path(app, &app_paths)
-                    .map(|path| Outcome {
-                        reveal: Some(path),
+                    }),
+                    Operation::Open(name) => store.profile_directory(&name).map(|path| Outcome {
+                        open_path: Some(path),
                         ..Default::default()
                     }),
-                Operation::ReadConfig => store.read_config().map(|config| Outcome {
-                    config: Some(config),
-                    ..Default::default()
-                }),
-                Operation::SaveConfig(original, edited) => store
-                    .save_config(&original, &edited)
-                    .map(|message| Outcome {
-                        message,
+                    Operation::OpenVersion(name, id) => {
+                        store.version_directory(&name, &id).map(|path| Outcome {
+                            open_path: Some(path),
+                            ..Default::default()
+                        })
+                    }
+                    Operation::Settings(settings) => {
+                        store.save_settings(&settings).map(|message| Outcome {
+                            message,
+                            ..Default::default()
+                        })
+                    }
+                    Operation::SwitchVersion(name, id) => {
+                        store.switch_version(&name, &id).map(|message| Outcome {
+                            message,
+                            selected: Some(name),
+                            ..Default::default()
+                        })
+                    }
+                    Operation::DeleteVersion(name, id) => {
+                        store.delete_version(&name, &id).map(|message| Outcome {
+                            message,
+                            selected: Some(name),
+                            ..Default::default()
+                        })
+                    }
+                    Operation::DeleteProfiles(names) => {
+                        store.delete_profiles(&names).map(|message| Outcome {
+                            message,
+                            ..Default::default()
+                        })
+                    }
+                    Operation::Desktop(app, action) => desktop::perform(app, action, &app_paths)
+                        .map(|message| Outcome {
+                            message,
+                            ..Default::default()
+                        }),
+                    Operation::OpenInstallation(app) => desktop::installation_path(app, &app_paths)
+                        .map(|path| Outcome {
+                            reveal: Some(path),
+                            ..Default::default()
+                        }),
+                    Operation::ReadConfig => store.read_config().map(|config| Outcome {
+                        config: Some(config),
                         ..Default::default()
                     }),
-            };
+                    Operation::SaveConfig(original, edited) => store
+                        .save_config(&original, &edited)
+                        .map(|message| Outcome {
+                            message,
+                            ..Default::default()
+                        }),
+                    Operation::SelectTheme(id) => {
+                        theme_service
+                            .select(&theme_directory, id)
+                            .map(|message| Outcome {
+                                message,
+                                ..Default::default()
+                            })
+                    }
+                    Operation::ImportThemes(paths) => theme_service
+                        .import_files(&theme_directory, &paths)
+                        .map(|message| Outcome {
+                            message,
+                            ..Default::default()
+                        }),
+                    Operation::ThemeTransparency(value) => theme_service
+                        .set_transparency(value)
+                        .map(|message| Outcome {
+                            message,
+                            ..Default::default()
+                        }),
+                    Operation::OpenThemes => {
+                        theme_service.directory(&theme_directory).and_then(|path| {
+                            std::fs::create_dir_all(&path)?;
+                            Ok(Outcome {
+                                open_path: Some(path),
+                                ..Default::default()
+                            })
+                        })
+                    }
+                };
             (result, store.load())
         });
         // Tray actions can outlive all windows. Complete against the retained
@@ -352,6 +472,9 @@ impl Switcher {
                         }
                         if let Some(path) = outcome.reveal {
                             cx.reveal_path(&path);
+                        }
+                        if let Some(path) = outcome.open_path {
+                            cx.open_with_system(&path);
                         }
                         if let Some(config) = outcome.config {
                             this.show_auxiliary_window(WindowKind::Editor, Some(config), cx);
@@ -392,6 +515,10 @@ impl Switcher {
                 cx.notify();
                 cx.refresh_windows();
                 this.refresh_apps(cx);
+                this.refresh_themes(cx);
+                if (theme_operation || themed_launch) && !success {
+                    this.show_theme_error(this.message.clone(), cx);
+                }
                 cx.emit(OperationFinished {
                     origin,
                     success,
@@ -850,6 +977,7 @@ impl Render for Switcher {
                                     .flex()
                                     .flex_col()
                                     .min_w_0()
+                                    .flex_1()
                                     .gap_0p5()
                                     .child(div().font_semibold().truncate().child(current))
                                     .child(
@@ -885,9 +1013,11 @@ impl Render for Switcher {
                                     .accessibility_label("打开 config.toml 所在目录")
                                     .tooltip("打开 config.toml 所在目录")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        cx.reveal_path(this.store.root())
+                                        let path = this.store.root().join("config.toml");
+                                        cx.reveal_path(&path)
                                     })),
-                            ),
+                            )
+                            .child(self.render_theme_controls(cx)),
                     )
                     .children(self.snapshot.warning.clone().map(|warning| {
                         div().text_xs().text_color(cx.theme().danger).child(warning)

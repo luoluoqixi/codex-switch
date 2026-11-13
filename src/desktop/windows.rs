@@ -174,6 +174,31 @@ pub(super) fn close(status: &AppStatus, paths: &[String; 1]) -> Result<()> {
 }
 
 pub(super) fn launch(status: &AppStatus) -> Result<()> {
+    let theme_arguments = crate::themes::launch_arguments()?;
+    // AppsFolder navigation discards arbitrary command-line arguments. When
+    // theming is on, launch the exact executable found by discovery instead.
+    if !theme_arguments.is_empty() {
+        if let Some(path) = &status.path {
+            let mut command = Command::new(path);
+            command.args(&theme_arguments);
+            if let Some(parent) = path.parent() {
+                command.current_dir(parent);
+            }
+            if command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        if let Some(id) = &status.registered_id {
+            return activate_with_arguments(id, &theme_arguments);
+        }
+        bail!("无法以主题模式打开应用，请在设置中选择 ChatGPT.exe 的完整路径");
+    }
     let mut command = if let Some(id) = &status.registered_id {
         let root = std::env::var_os("SystemRoot")
             .map(PathBuf::from)
@@ -196,4 +221,61 @@ pub(super) fn launch(status: &AppStatus) -> Result<()> {
         .spawn()
         .context("无法打开应用，请检查设置中的应用路径")?;
     Ok(())
+}
+
+fn activate_with_arguments(id: &str, arguments: &[std::ffi::OsString]) -> Result<()> {
+    use windows::{
+        Win32::{
+            System::Com::{
+                CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+                CoUninitialize,
+            },
+            UI::Shell::{AO_NONE, ApplicationActivationManager, IApplicationActivationManager},
+        },
+        core::HSTRING,
+    };
+    // These arguments originate in the theme service, never in a theme ZIP.
+    let line = arguments
+        .iter()
+        .map(|arg| quote_argument(&arg.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let result = (|| -> Result<()> {
+            let manager: IApplicationActivationManager =
+                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)
+                    .context("无法初始化 Windows 应用启动器")?;
+            manager
+                .ActivateApplication(&HSTRING::from(id), &HSTRING::from(line), AO_NONE)
+                .context("无法以主题参数打开应用，请手动退出后重试")?;
+            Ok(())
+        })();
+        if initialized {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+// CommandLineToArgvW quoting, including a possible trailing backslash.
+fn quote_argument(value: &str) -> String {
+    let mut result = String::from("\"");
+    let mut slashes = 0;
+    for ch in value.chars() {
+        if ch == '\\' {
+            slashes += 1;
+            continue;
+        }
+        if ch == '"' {
+            result.extend(std::iter::repeat_n('\\', slashes * 2 + 1));
+        } else {
+            result.extend(std::iter::repeat_n('\\', slashes));
+        }
+        slashes = 0;
+        result.push(ch);
+    }
+    result.extend(std::iter::repeat_n('\\', slashes * 2));
+    result.push('"');
+    result
 }
