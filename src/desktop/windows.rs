@@ -29,7 +29,8 @@ $session = (Get-Process -Id $PID).SessionId
 $results = foreach ($spec in $specs) {
     $name = [string]$spec.name
     $custom = [string]$spec.path
-    $registered = $startApps | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+    # A desktop shortcut such as com.openai.codex is not an AppUserModelID.
+    $registered = $startApps | Where-Object { $_.Name -eq $name -and $_.AppID -match '^[^!]+![^!]+$' } | Select-Object -First 1
     $appId = if ($registered) { [string]$registered.AppID } else { '' }
     $expected = @()
     $problem = ''
@@ -39,13 +40,22 @@ $results = foreach ($spec in $specs) {
         } else { $problem = 'path' }
         $appId = ''
     } else {
-        foreach ($package in $packages) {
-            if ($appId -and $appId.StartsWith($package.PackageFamilyName + '!', [StringComparison]::OrdinalIgnoreCase)) {
+        # Resolve the package independently of StartApps: duplicate display names
+        # and desktop shortcuts must not hide an installed, stopped application.
+        foreach ($package in @($packages | Sort-Object @{ Expression = { if ($_.Name -eq 'OpenAI.Codex') { 0 } else { 1 } } })) {
+            if ($package.InstallLocation -and $package.PackageFamilyName) {
                 try {
-                    $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+                    $manifestPath = Join-Path $package.InstallLocation 'AppxManifest.xml'
+                    $manifest = [xml](Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop)
                     foreach ($application in $manifest.Package.Applications.Application) {
                         if ([IO.Path]::GetFileName([string]$application.Executable) -ieq "$name.exe") {
-                            $expected += Join-Path $package.InstallLocation ([string]$application.Executable)
+                            $candidate = Join-Path $package.InstallLocation ([string]$application.Executable)
+                            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                                $expected += $candidate
+                                if ($expected.Count -eq 1) {
+                                    $appId = [string]$package.PackageFamilyName + '!' + [string]$application.Id
+                                }
+                            }
                         }
                     }
                 } catch { }
@@ -178,29 +188,49 @@ pub(super) fn launch(status: &AppStatus) -> Result<()> {
     let theme_arguments = crate::themes::launch_arguments()?;
     // AppsFolder navigation discards debugging arguments. Always launch with
     // the persistent theme endpoint, including while themes are switched off.
+    let mut direct_error = None;
     if let Some(path) = &status.path {
         let mut command = Command::new(path);
         command.args(&theme_arguments);
         if let Some(parent) = path.parent() {
             command.current_dir(parent);
         }
-        if command
+        match command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .is_ok()
         {
-            return Ok(());
+            Ok(_) => return Ok(()),
+            Err(error) => direct_error = Some(error),
         }
     }
     if let Some(id) = &status.registered_id {
-        return activate_with_arguments(id, &theme_arguments);
+        return activate_with_arguments(id, &theme_arguments).with_context(|| {
+            match (&status.path, direct_error) {
+                (Some(path), Some(error)) => format!(
+                    "直接启动 {} 失败：{error}；Windows 应用入口启动也失败",
+                    path.display()
+                ),
+                _ => "Windows 应用入口启动失败，无法确认可执行文件位置；请在设置中指定 ChatGPT.exe"
+                    .into(),
+            }
+        });
+    }
+    if let Some(error) = direct_error {
+        return Err(error).context("无法直接启动 ChatGPT.exe，请检查应用路径和访问权限");
     }
     bail!("无法以主题模式打开应用，请在设置中选择 ChatGPT.exe 的完整路径");
 }
 
 fn activate_with_arguments(id: &str, arguments: &[std::ffi::OsString]) -> Result<()> {
+    anyhow::ensure!(
+        id.split_once('!')
+            .is_some_and(|(family, app)| !family.is_empty()
+                && !app.is_empty()
+                && !app.contains('!')),
+        "Windows 应用启动标识无效，请刷新后重试或在设置中指定 ChatGPT.exe"
+    );
     use windows::{
         Win32::{
             System::Com::{
@@ -255,4 +285,60 @@ fn quote_argument(value: &str) -> String {
     result.extend(std::iter::repeat_n('\\', slashes * 2));
     result.push('"');
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopped_store_app_is_discovered_despite_duplicate_or_missing_start_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_root = temp.path().join("Codex package with spaces");
+        std::fs::create_dir_all(package_root.join("app")).unwrap();
+        let executable = package_root.join("app/ChatGPT.exe");
+        std::fs::write(&executable, b"test fixture").unwrap();
+        std::fs::write(package_root.join("AppxManifest.xml"), r#"<?xml version="1.0"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Applications>
+    <Application Id="App" Executable="app/ChatGPT.exe" EntryPoint="Windows.FullTrustApplication" />
+    <Application Id="Helper" Executable="app/helper.exe" EntryPoint="Windows.FullTrustApplication" />
+  </Applications>
+</Package>"#).unwrap();
+        // Keep the real discovery algorithm and replace only OS inventory.
+        let mocks = r#"
+function Get-StartApps {
+    if ($env:CODEX_SWITCH_TEST_NO_START -eq '1') { return }
+    [pscustomobject]@{ Name = 'ChatGPT'; AppID = 'com.openai.codex' }
+    [pscustomobject]@{ Name = 'ChatGPT'; AppID = 'OpenAI.Codex_test!App' }
+}
+function Get-AppxPackage {
+    [pscustomobject]@{ Name = 'OpenAI.Codex'; InstallLocation = $env:CODEX_SWITCH_TEST_PACKAGE; PackageFamilyName = 'OpenAI.Codex_test' }
+}
+function Get-Process {
+    param($Id, $Name)
+    if ($null -ne $Id) { [pscustomobject]@{ SessionId = 1 } }
+}
+"#;
+        for no_start in ["0", "1"] {
+            let mut command = powershell(&format!("{mocks}\n{DISCOVERY_SCRIPT}"));
+            command.env("CODEX_SWITCH_APPS", r#"[{"name":"ChatGPT","path":""}]"#);
+            command.env("CODEX_SWITCH_TEST_PACKAGE", &package_root);
+            command.env("CODEX_SWITCH_TEST_NO_START", no_start);
+            let result: Value = serde_json::from_slice(&output(command).unwrap()).unwrap();
+            assert_eq!(result[0]["appId"], "OpenAI.Codex_test!App");
+            assert_eq!(
+                PathBuf::from(result[0]["path"].as_str().unwrap()),
+                executable
+            );
+            assert_eq!(result[0]["pids"], json!([]));
+            assert_eq!(result[0]["problem"], "");
+        }
+    }
+
+    #[test]
+    fn desktop_shortcut_cannot_be_used_as_packaged_app_activation_id() {
+        let error = activate_with_arguments("com.openai.codex", &[]).unwrap_err();
+        assert!(error.to_string().contains("启动标识无效"));
+    }
 }

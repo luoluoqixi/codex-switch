@@ -187,9 +187,9 @@ impl Switcher {
                             "{} · {label} · 调试入口{}",
                             app.name(),
                             if status.is_some_and(AppStatus::has_debug_endpoint) {
-                                "已开启"
+                                " (开)"
                             } else {
-                                "未开启"
+                                " (关)"
                             }
                         )
                     } else {
