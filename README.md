@@ -7,7 +7,7 @@
 ## windows
 
 ```sh
-cargo build --release
+cargo bundle --release --format wxsmsi
 ```
 
 ## macOS
