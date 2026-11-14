@@ -71,14 +71,16 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
     let mut command = jxa(DISCOVERY_SCRIPT);
     command.arg(serde_json::to_string(&specs)?);
     let bytes = output(command)?;
-    let values: Vec<Value> = serde_json::from_slice(&bytes).context("无法解析 macOS 应用信息")?;
+    let values: Vec<Value> = serde_json::from_slice(&bytes).context(crate::tr!(
+        "macos.could_not_parse_macos_application_information"
+    ))?;
     DesktopApp::ALL
         .into_iter()
         .map(|app| {
             let value = values
                 .iter()
                 .find(|v| v["name"].as_str() == Some(app.name()))
-                .context("macOS 应用信息不完整")?;
+                .context(crate::tr!("macos.incomplete_macos_application_information"))?;
             Ok(AppStatus {
                 app,
                 debug_endpoint: false,
@@ -87,7 +89,7 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
                 problem: value["problem"]
                     .as_str()
                     .filter(|s| !s.is_empty())
-                    .map(|_| format!("{} 路径无效，请在设置中选择对应的 .app 应用。", app.name())),
+                    .map(|_| crate::tr!("macos.invalid_path_select_the_corresponding_app_in_settings"; arg0 = app.name())),
             })
         })
         .collect()
@@ -105,7 +107,9 @@ function run(argv) {
 }"#;
     let mut command = jxa(SCRIPT);
     command.arg(serde_json::to_string(&status.pids)?);
-    output(command).context("无法请求应用退出，请检查应用内是否有待处理的提示")?;
+    output(command).context(crate::tr!(
+        "macos.could_not_request_app_termination_check_for_pending_prompts"
+    ))?;
     Ok(())
 }
 
@@ -113,12 +117,14 @@ pub(super) fn launch(status: &AppStatus) -> Result<()> {
     let path = status
         .path
         .as_ref()
-        .context("请在设置中指定 .app 应用路径")?;
+        .context(crate::tr!("macos.set_the_app_path_in_settings"))?;
     let mut command = Command::new("/usr/bin/open");
     command.arg("-a").arg(path);
     let theme_arguments = crate::themes::launch_arguments()?;
     command.arg("--args").args(theme_arguments);
-    output(command).context("无法打开 macOS 应用，请检查设置中的 .app 路径")?;
+    output(command).context(crate::tr!(
+        "macos.could_not_open_the_macos_app_check_the_app"
+    ))?;
     Ok(())
 }
 

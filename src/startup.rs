@@ -22,14 +22,20 @@ pub(crate) fn apply(enabled: bool, config_root: &Path) -> Result<StartupChange> 
     {
         let key = windows_registry::CURRENT_USER
             .create(RUN_KEY)
-            .context("无法打开当前用户的开机启动设置")?;
+            .context(crate::tr!(
+                "startup.could_not_open_the_current_user_s_startup_settings"
+            ))?;
         let previous = match key.get_value(RUN_NAME) {
             Ok(value) => Some(value),
             Err(error) if error.code().0 as u32 == 0x80070002 => None,
-            Err(error) => return Err(error).context("无法读取开机启动设置"),
+            Err(error) => {
+                return Err(error).context(crate::tr!("startup.could_not_read_startup_settings"));
+            }
         };
         if enabled {
-            let executable = std::env::current_exe().context("无法获取程序位置")?;
+            let executable = std::env::current_exe().context(crate::tr!(
+                "startup.could_not_locate_the_application_executable"
+            ))?;
             // CommandLineToArgvW quoting, including a directory ending in '\'.
             let command = format!(
                 "{} --codex-dir {}",
@@ -37,24 +43,32 @@ pub(crate) fn apply(enabled: bool, config_root: &Path) -> Result<StartupChange> 
                 quote_windows(config_root)
             );
             key.set_string(RUN_NAME, command)
-                .context("无法启用开机启动")?;
+                .context(crate::tr!("startup.could_not_enable_launch_at_startup"))?;
         } else if previous.is_some() {
-            key.remove_value(RUN_NAME).context("无法禁用开机启动")?;
+            key.remove_value(RUN_NAME)
+                .context(crate::tr!("startup.could_not_disable_launch_at_startup"))?;
         }
         Ok(StartupChange { previous })
     }
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var_os("HOME").context("无法获取用户主目录")?;
+        let home = std::env::var_os("HOME").context(crate::tr!(
+            "single_instance.could_not_find_your_home_directory"
+        ))?;
         let path = std::path::PathBuf::from(home)
             .join("Library/LaunchAgents/com.luoluoqixi.codex-switch.plist");
         let previous = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error).context("无法读取登录启动设置"),
+            Err(error) => {
+                return Err(error)
+                    .context(crate::tr!("startup.could_not_read_login_startup_settings"));
+            }
         };
         if enabled {
-            let executable = std::env::current_exe().context("无法获取程序位置")?;
+            let executable = std::env::current_exe().context(crate::tr!(
+                "startup.could_not_locate_the_application_executable"
+            ))?;
             let plist = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -68,16 +82,21 @@ pub(crate) fn apply(enabled: bool, config_root: &Path) -> Result<StartupChange> 
                 xml(&executable.to_string_lossy()),
                 xml(&config_root.to_string_lossy())
             );
-            write_plist(&path, plist.as_bytes()).context("无法启用登录启动")?;
+            write_plist(&path, plist.as_bytes())
+                .context(crate::tr!("startup.could_not_enable_launch_at_login"))?;
         } else if previous.is_some() {
-            std::fs::remove_file(&path).context("无法禁用登录启动")?;
+            std::fs::remove_file(&path)
+                .context(crate::tr!("startup.could_not_disable_launch_at_login"))?;
         }
         Ok(StartupChange { path, previous })
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = config_root;
-        anyhow::ensure!(!enabled, "开机启动目前支持 Windows 和 macOS");
+        anyhow::ensure!(
+            !enabled,
+            crate::tr!("startup.launch_at_login_is_supported_on_windows_and_macos")
+        );
         Ok(StartupChange {})
     }
 }
@@ -143,7 +162,9 @@ fn xml(text: &str) -> String {
 #[cfg(target_os = "macos")]
 fn write_plist(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let parent = path.parent().context("登录启动目录无效")?;
+    let parent = path
+        .parent()
+        .context(crate::tr!("startup.invalid_login_startup_directory"))?;
     std::fs::create_dir_all(parent)?;
     let mut staged = tempfile::NamedTempFile::new_in(parent)?;
     staged.write_all(bytes)?;

@@ -8,7 +8,11 @@ pub(super) struct BackupForm {
 impl BackupForm {
     pub(super) fn new(window: &mut Window, cx: &mut Context<AuxiliaryWindow>) -> Self {
         Self {
-            name: cx.new(|cx| InputState::new(window, cx).placeholder("例如：官方、工作、备用")),
+            name: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(crate::tr!(
+                    "new_backup_window.for_example_personal_work_backup"
+                ))
+            }),
         }
     }
 }
@@ -23,7 +27,7 @@ impl AuxiliaryWindow {
         };
         let name = form.name.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.error = "请输入配置名称。".into();
+            self.error = crate::tr!("new_backup_window.enter_a_profile_name").into();
             cx.notify();
             return;
         }
@@ -41,18 +45,24 @@ impl AuxiliaryWindow {
             .min_h_0()
             .p_4()
             .gap_2()
-            .child(div().text_sm().child("配置名称"))
+            .child(
+                div()
+                    .text_sm()
+                    .child(crate::tr!("new_backup_window.profile_name")),
+            )
             .child(
                 Input::new(&form.name)
                     .id("new-backup-name")
-                    .aria_label("配置名称")
+                    .aria_label(crate::tr!("new_backup_window.profile_name"))
                     .disabled(busy),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("新建同名目录，并保存当前 config.toml 和 auth.json。"),
+                    .child(crate::tr!(
+                        "new_backup_window.create_a_directory_with_this_name_and_save_the"
+                    )),
             )
     }
 }

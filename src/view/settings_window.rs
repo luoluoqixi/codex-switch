@@ -1,6 +1,11 @@
 use super::auxiliary_window::{AuxiliaryWindow, WindowContent};
 use super::*;
-use gpui_kit::component::{scroll::ScrollableElement, switch::Switch};
+use crate::i18n::Language;
+use gpui_kit::component::{
+    radio::{Radio, RadioGroup},
+    scroll::ScrollableElement,
+    switch::Switch,
+};
 
 pub(super) struct SettingsForm {
     pub(super) version_limit: Entity<InputState>,
@@ -8,6 +13,7 @@ pub(super) struct SettingsForm {
     pub(super) theme_directory: Entity<InputState>,
     launch_at_login: bool,
     exit_on_close: bool,
+    language: Language,
 }
 
 impl SettingsForm {
@@ -19,6 +25,7 @@ impl SettingsForm {
         Self {
             launch_at_login: settings.launch_at_login,
             exit_on_close: settings.exit_on_close,
+            language: settings.language,
             version_limit: cx.new(|cx| {
                 InputState::new(window, cx).default_value(settings.max_versions.to_string())
             }),
@@ -50,6 +57,7 @@ impl AuxiliaryWindow {
                     .to_string();
                 self.run(
                     Operation::Settings(Settings {
+                        language: form.language,
                         max_versions,
                         chatgpt_app_path,
                         theme_directory: form
@@ -67,7 +75,8 @@ impl AuxiliaryWindow {
                 );
             }
             _ => {
-                self.error = "请输入 1–1000 之间的整数。".into();
+                self.error =
+                    crate::tr!("settings_window.enter_an_integer_between_1_and_1000").into();
                 cx.notify();
             }
         }
@@ -98,11 +107,11 @@ impl AuxiliaryWindow {
                 multiple: false,
                 prompt: Some(
                     if theme_directory {
-                        "选择主题目录"
+                        crate::tr!("settings_window.choose_theme_directory")
                     } else if cfg!(target_os = "macos") {
-                        "选择 ChatGPT.app"
+                        crate::tr!("settings_window.choose_chatgpt_app")
                     } else {
-                        "选择 ChatGPT.exe"
+                        crate::tr!("settings_window.choose_chatgpt_exe")
                     }
                     .into(),
                 ),
@@ -145,8 +154,8 @@ impl AuxiliaryWindow {
                                     }
                                 }
                                 Ok(Ok(None)) => {}
-                                Ok(Err(error)) => child.error = format!("无法选择路径：{error:#}"),
-                                Err(_) => child.error = "系统文件选择器未返回结果，请重试。".into(),
+                                Ok(Err(error)) => child.error = crate::tr!("settings_window.could_not_choose_the_path"; error = format!("{:#}", error)),
+                                Err(_) => child.error = crate::tr!("settings_window.the_system_file_picker_returned_no_result_try_again").into(),
                             }
                             cx.notify();
                         });
@@ -163,50 +172,67 @@ impl AuxiliaryWindow {
         };
         div().flex_1().min_h_0().overflow_y_scrollbar().child(
             div().flex().flex_col().gap_2().p_4()
-                .child(div().text_lg().font_semibold().child("全局设置"))
-                                .child(div().font_semibold().mt_2().child("启动与关闭"))
-                .child(Switch::new("launch-at-login").label("开机启动 Codex Switch")
+                .child(div().text_lg().font_semibold().child(crate::tr!("auxiliary_window.settings")))
+                .child(div().font_semibold().mt_2().child(crate::tr!("settings_window.language")))
+                .child(RadioGroup::new("language").layout(Axis::Horizontal)
+                    .selected_index(Some(if form.language == Language::English { 0 } else { 1 }))
+                    .children([
+                        Radio::new("language-en").label("English"),
+                        Radio::new("language-zh-cn").label("简体中文"),
+                    ])
+                    .disabled(busy)
+                    .on_change(cx.listener(|this, index, _, cx| {
+                        if let WindowContent::Settings(form) = &mut this.content {
+                            form.language = if *index == 0 { Language::English } else { Language::SimplifiedChinese };
+                        }
+                        this.error.clear();
+                        cx.notify();
+                    })))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                    .child(crate::tr!("settings_window.language_help")))
+                .child(div().font_semibold().mt_2().child(crate::tr!("settings_window.startup_and_closing")))
+                .child(Switch::new("launch-at-login").label(crate::tr!("settings_window.launch_codex_switch_at_login"))
                     .checked(form.launch_at_login).disabled(busy)
                     .on_click(cx.listener(|this, checked, _, cx| {
                         if let WindowContent::Settings(form) = &mut this.content { form.launch_at_login = *checked; }
                         this.error.clear(); cx.notify();
                     })))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground))
-                .child(Switch::new("exit-on-close").label("关闭主窗口时退出程序")
+                .child(Switch::new("exit-on-close").label(crate::tr!("settings_window.quit_when_the_main_window_closes"))
                     .checked(form.exit_on_close).disabled(busy)
                     .on_click(cx.listener(|this, checked, _, cx| {
                         if let WindowContent::Settings(form) = &mut this.content { form.exit_on_close = *checked; }
                         this.error.clear(); cx.notify();
                     })))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground))
-                .child(div().font_semibold().mt_2().child("备份"))
-                .child(div().text_sm().child("每个配置保留的版本数"))
+                .child(div().font_semibold().mt_2().child(crate::tr!("settings_window.back_up")))
+                .child(div().text_sm().child(crate::tr!("settings_window.versions_to_keep_per_profile")))
                 .child(Input::new(&form.version_limit).id("max-versions")
-                    .aria_label("每个配置保留的版本数，1 到 1000").disabled(busy))
+                    .aria_label(crate::tr!("settings_window.versions_to_keep_per_profile_1_to_1000")).disabled(busy))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                    .child("默认 10，范围 1–1000。适用于所有配置及自动备份。保存设置后立即清理超出的旧版本，以后每次备份也会自动清理。"))
+                    .child(crate::tr!("settings_window.default_10_range_1_1000_applies_to_all_profiles")))
                 .child(div().text_xs().text_color(cx.theme().warning)
-                    .child("清理的旧版本无法恢复，当前配置文件会保留。"))
-                .child(div().font_semibold().mt_2().child("桌面应用"))
-                .child(div().text_sm().child("ChatGPT 应用路径（可选）"))
+                    .child(crate::tr!("settings_window.removed_versions_cannot_be_recovered_the_current_configuration_files")))
+                .child(div().font_semibold().mt_2().child(crate::tr!("settings_window.desktop_app")))
+                .child(div().text_sm().child(crate::tr!("settings_window.chatgpt_app_path_optional")))
                 .child(div().flex().items_center().gap_2()
                     .child(Input::new(&form.app_path).id("chatgpt-app-path")
-                        .flex_1().min_w_0().aria_label("ChatGPT 应用路径，留空自动查找").disabled(busy))
+                        .flex_1().min_w_0().aria_label(crate::tr!("settings_window.chatgpt_app_path_leave_blank_to_detect_automatically")).disabled(busy))
                     .child(Button::new("choose-chatgpt-app").outline().icon(IconName::FolderOpen)
-                        .label("选择…").disabled(busy)
+                        .label(crate::tr!("settings_window.choose")).disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| this.choose_settings_path(false, window, cx)))))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                    .child(if cfg!(target_os = "macos") { "留空自动查找；或选择 ChatGPT.app。" } else { "留空自动查找；或选择 ChatGPT.exe。" }))
-                .child(div().font_semibold().mt_2().child("主题"))
-                .child(div().text_sm().child("主题目录（可选）"))
+                    .child(if cfg!(target_os = "macos") { crate::tr!("settings_window.leave_blank_to_detect_automatically_or_select_chatgpt_app") } else { crate::tr!("settings_window.leave_blank_to_detect_automatically_or_select_chatgpt_exe") }))
+                .child(div().font_semibold().mt_2().child(crate::tr!("settings_window.theme")))
+                .child(div().text_sm().child(crate::tr!("settings_window.theme_directory_optional")))
                 .child(div().flex().items_center().gap_2()
                     .child(Input::new(&form.theme_directory).id("theme-directory").flex_1().min_w_0()
-                        .aria_label("主题目录，留空使用程序旁的 Themes 文件夹").disabled(busy))
+                        .aria_label(crate::tr!("settings_window.theme_directory_leave_blank_to_use_the_themes_folder")).disabled(busy))
                     .child(Button::new("choose-theme-directory").outline().icon(IconName::FolderOpen)
-                        .label("选择…").disabled(busy)
+                        .label(crate::tr!("settings_window.choose")).disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| this.choose_settings_path(true, window, cx)))))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                    .child("留空使用程序所在文件夹中的 Themes 目录。导入 ZIP 仅解压；手动解压到此目录的主题也会自动出现在列表中。"))
+                    .child(crate::tr!("settings_window.leave_blank_to_use_the_themes_directory_beside_the")))
         )
     }
 }

@@ -43,7 +43,7 @@ impl AuxiliaryWindow {
                     .font_semibold()
                     .flex_shrink_0()
                     .truncate()
-                    .child(format!("历史版本 · {} · {count} 个", history.name)),
+                    .child(crate::tr!("history_window.version_history_versions"; arg0 = history.name, count = count)),
             )
             .child(
                 div()
@@ -51,7 +51,7 @@ impl AuxiliaryWindow {
                     .flex_shrink_0()
                     .text_color(cx.theme().muted_foreground)
                     .child(
-                        "按时间从新到旧排列。切换前自动备份当前文件；删除版本不会改动当前配置。",
+                        crate::tr!("history_window.newest_versions_first_the_current_files_are_backed_up"),
                     ),
             )
             .child(if count == 0 {
@@ -59,9 +59,9 @@ impl AuxiliaryWindow {
                     .flex_1()
                     .p_4()
                     .child(if exists {
-                        "此配置暂无备份版本，可保存新的备份。"
+                        crate::tr!("history_window.this_profile_has_no_backup_versions_yet_save_a")
                     } else {
-                        "此配置目录已被删除。"
+                        crate::tr!("history_window.this_profile_directory_has_been_deleted")
                     })
                     .into_any_element()
             } else {
@@ -119,7 +119,7 @@ impl AuxiliaryWindow {
                     Button::new("refresh-history")
                         .ghost()
                         .icon(IconName::RefreshCw)
-                        .label("刷新")
+                        .label(crate::tr!("history_window.refresh"))
                         .disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run(Operation::Refresh, window, cx)
@@ -185,7 +185,7 @@ impl AuxiliaryWindow {
                                 cx.theme().muted_foreground
                             })
                             .child(if version.is_current {
-                                "使用中".into()
+                                crate::tr!("history_window.in_use").into()
                             } else {
                                 version.problem.clone().unwrap_or_default()
                             }),
@@ -196,7 +196,7 @@ impl AuxiliaryWindow {
                     .small()
                     .outline()
                     .icon(IconName::Undo2)
-                    .label("还原到此版本")
+                    .label(crate::tr!("history_window.restore_this_version"))
                     .disabled(unavailable || version.problem.is_some() || version.is_current)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.owner.update(cx, |owner, cx| {
@@ -214,8 +214,8 @@ impl AuxiliaryWindow {
                     .small()
                     .danger()
                     .icon(IconName::Trash)
-                    .label("删除…")
-                    .accessibility_label(format!("删除 {name} 的 {} 版本", version.time))
+                    .label(crate::tr!("history_window.delete"))
+                    .accessibility_label(crate::tr!("history_window.delete_the_version_of"; name = name, arg0 = version.time))
                     .disabled(unavailable)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.owner.update(cx, |owner, cx| {
@@ -234,8 +234,8 @@ impl AuxiliaryWindow {
                     .ghost()
                     .small()
                     .icon(IconName::FolderOpen)
-                    .accessibility_label(format!("打开 {name} 的 {} 版本目录", version.time))
-                    .tooltip("打开此版本的备份目录")
+                    .accessibility_label(crate::tr!("history_window.open_the_version_directory_for"; name = name, arg0 = version.time))
+                    .tooltip(crate::tr!("history_window.open_this_version_s_backup_directory"))
                     .disabled(unavailable)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run(

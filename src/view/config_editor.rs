@@ -73,7 +73,7 @@ impl AuxiliaryWindow {
                     .flex_shrink_0()
                     .child(div().flex_1().min_w_0().font_semibold().truncate().child(
                         if editor.is_dirty(cx) {
-                            "config.toml · 未保存"
+                            crate::tr!("config_editor.config_toml_unsaved")
                         } else {
                             "config.toml"
                         },
@@ -83,7 +83,9 @@ impl AuxiliaryWindow {
                             .outline()
                             .icon(IconName::FolderOpen)
                             .flex_shrink_0()
-                            .tooltip("打开 config.toml 所在文件夹")
+                            .tooltip(crate::tr!(
+                                "config_editor.open_the_folder_containing_config_toml"
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let path = this.owner.read(cx).store.root().to_path_buf();
                                 cx.defer(move |cx| cx.open_with_system(&path));
@@ -95,7 +97,9 @@ impl AuxiliaryWindow {
                             .icon(IconName::ExternalLink)
                             .flex_shrink_0()
                             .disabled(busy)
-                            .tooltip("使用系统默认应用打开磁盘上的 config.toml")
+                            .tooltip(crate::tr!(
+                                "config_editor.open_config_toml_from_disk_with_the_default_app"
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let path = this.owner.read(cx).store.root().join("config.toml");
                                 cx.defer(move |cx| cx.open_with_system(&path));
@@ -117,14 +121,16 @@ impl AuxiliaryWindow {
                     .flex_1()
                     .min_h_0()
                     .readonly(busy)
-                    .aria_label("当前 config.toml 编辑器"),
+                    .aria_label(crate::tr!("config_editor.current_config_toml_editor")),
             )
             .children(editor.discard_pending.then(|| {
                 div()
                     .flex_shrink_0()
                     .text_sm()
                     .text_color(cx.theme().warning)
-                    .child("有未保存的修改。保存后关闭，或点击“放弃修改”。")
+                    .child(crate::tr!(
+                        "config_editor.you_have_unsaved_changes_save_before_closing_or_choose"
+                    ))
             }))
     }
 }

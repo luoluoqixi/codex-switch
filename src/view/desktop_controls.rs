@@ -76,8 +76,12 @@ impl Switcher {
                         Button::new("open-root")
                             .ghost()
                             .icon(IconName::FolderOpen)
-                            .accessibility_label("打开 Codex 配置目录")
-                            .tooltip("打开 Codex 配置目录")
+                            .accessibility_label(crate::tr!(
+                                "desktop_controls.open_the_codex_configuration_directory"
+                            ))
+                            .tooltip(crate::tr!(
+                                "desktop_controls.open_the_codex_configuration_directory"
+                            ))
                             .on_click(
                                 cx.listener(|this, _, _, cx| {
                                     cx.open_with_system(this.store.root())
@@ -88,11 +92,11 @@ impl Switcher {
                         Button::new("refresh")
                             .ghost()
                             .icon(IconName::RefreshCw)
-                            .accessibility_label("刷新配置列表")
+                            .accessibility_label(crate::tr!("desktop_controls.refresh_profiles"))
                             .tooltip(if cfg!(target_os = "macos") {
-                                "刷新配置列表（⌘R / F5）"
+                                crate::tr!("desktop_controls.refresh_profiles_r_f5")
                             } else {
-                                "刷新配置列表（Ctrl+R / F5）"
+                                crate::tr!("desktop_controls.refresh_profiles_ctrl_r_f5")
                             })
                             .disabled(self.busy || self.prompt_open)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -116,7 +120,9 @@ impl Switcher {
         Button::new("app-menu")
             .ghost()
             .icon(IconName::Menu)
-            .accessibility_label("应用菜单：设置和关于")
+            .accessibility_label(crate::tr!(
+                "desktop_controls.application_menu_settings_and_about"
+            ))
             .dropdown_menu(move |menu, _, cx| {
                 let Some(owner) = view.upgrade() else {
                     return menu;
@@ -126,7 +132,7 @@ impl Switcher {
                 let settings = view.clone();
                 let about = view.clone();
                 menu.item(
-                    PopupMenuItem::new("设置…")
+                    PopupMenuItem::new(crate::tr!("shell.settings"))
                         .disabled(settings_disabled)
                         .on_click(move |_, _, cx| {
                             let _ = settings.update(cx, |this, cx| {
@@ -137,11 +143,15 @@ impl Switcher {
                         }),
                 )
                 .separator()
-                .item(PopupMenuItem::new("关于…").on_click(move |_, _, cx| {
-                    let _ = about.update(cx, |this, cx| {
-                        this.show_auxiliary_window(WindowKind::About, None, cx);
-                    });
-                }))
+                .item(
+                    PopupMenuItem::new(crate::tr!("desktop_controls.about")).on_click(
+                        move |_, _, cx| {
+                            let _ = about.update(cx, |this, cx| {
+                                this.show_auxiliary_window(WindowKind::About, None, cx);
+                            });
+                        },
+                    ),
+                )
             })
     }
 
@@ -152,17 +162,17 @@ impl Switcher {
         let unavailable =
             self.operation_pending() || !self.loaded || status.is_none() || problem.is_some();
         let label = if problem.is_some() {
-            "路径无效"
+            crate::tr!("desktop_controls.invalid_path")
         } else if running {
-            "已打开"
+            crate::tr!("desktop_controls.running")
         } else if status.is_some_and(AppStatus::is_installed) {
-            "未打开"
+            crate::tr!("desktop_controls.not_running")
         } else if status.is_some() {
-            "未找到"
+            crate::tr!("desktop_controls.not_found")
         } else if self.checking_apps || !self.loaded {
-            "检查中…"
+            crate::tr!("desktop_controls.checking")
         } else {
-            "状态未知"
+            crate::tr!("desktop_controls.unknown_status")
         };
         let actions: &[AppAction] = if running {
             &[AppAction::Close, AppAction::Restart]
@@ -183,15 +193,11 @@ impl Switcher {
                         cx.theme().muted_foreground
                     })
                     .child(if running && problem.is_none() {
-                        format!(
-                            "{} · {label} · 调试入口{}",
-                            app.name(),
-                            if status.is_some_and(AppStatus::has_debug_endpoint) {
-                                " (开)"
+                        crate::tr!("desktop_controls.debugging"; arg0 = app.name(), label = label, arg1 = if status.is_some_and(AppStatus::has_debug_endpoint) {
+                                crate::tr!("desktop_controls.on")
                             } else {
-                                " (关)"
-                            }
-                        )
+                                crate::tr!("desktop_controls.off")
+                            })
                     } else {
                         format!("{} · {label}", app.name())
                     }),
@@ -220,25 +226,22 @@ impl Switcher {
                 .accessibility_label(format!("{} {}", action.label(), app.name()))
                 .tooltip(problem.map(str::to_owned).unwrap_or_else(|| {
                     if !status.is_some_and(AppStatus::is_installed) {
-                        "未找到应用，可在设置中指定路径".into()
+                        crate::tr!("desktop_controls.app_not_found_set_its_path_in_settings").into()
                     } else {
                         match action {
-                            AppAction::Open => format!("打开 {} 桌面应用", app.name()),
+                            AppAction::Open => crate::tr!("desktop_controls.open_the_desktop_app"; arg0 = app.name()),
                             AppAction::Close => {
                                 if cfg!(target_os = "windows") {
-                                    format!("关闭 {}（强制结束应用及其子进程）", app.name())
+                                    crate::tr!("desktop_controls.close_force_stop_the_app_and_its_child_processes"; arg0 = app.name())
                                 } else {
-                                    format!("关闭 {}（退出桌面应用的所有窗口）", app.name())
+                                    crate::tr!("desktop_controls.close_quit_all_desktop_app_windows"; arg0 = app.name())
                                 }
                             }
                             AppAction::Restart => {
                                 if cfg!(target_os = "windows") {
-                                    format!(
-                                        "重新打开 {}（强制结束应用及其子进程，等待退出后启动）",
-                                        app.name()
-                                    )
+                                    crate::tr!("desktop_controls.reopen_force_stop_the_app_and_its_child_processes"; arg0 = app.name())
                                 } else {
-                                    format!("重新打开 {}（退出后重新启动桌面应用）", app.name())
+                                    crate::tr!("desktop_controls.reopen_quit_and_relaunch_the_desktop_app"; arg0 = app.name())
                                 }
                             }
                         }
@@ -254,15 +257,15 @@ impl Switcher {
                 Button::new("open-chatgpt-installation")
                     .ghost()
                     .icon(IconName::FolderOpen)
-                    .accessibility_label("在安装目录中选中 ChatGPT 应用")
+                    .accessibility_label(crate::tr!("desktop_controls.reveal_chatgpt_in_its_installation_directory"))
                     .tooltip(if status.is_some_and(AppStatus::has_installation_path) {
                         if cfg!(target_os = "macos") {
-                            "在 Finder 中选中 ChatGPT.app"
+                            crate::tr!("desktop_controls.reveal_chatgpt_app_in_finder")
                         } else {
-                            "在资源管理器中选中 ChatGPT.exe"
+                            crate::tr!("desktop_controls.reveal_chatgpt_exe_in_file_explorer")
                         }
                     } else {
-                        "未找到安装路径，可在设置中指定 ChatGPT 应用路径"
+                        crate::tr!("desktop_controls.installation_path_not_found_set_the_chatgpt_app_path")
                     })
                     .disabled(unavailable || !status.is_some_and(AppStatus::has_installation_path))
                     .on_click(cx.listener(move |this, _, window, cx| {

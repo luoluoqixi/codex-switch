@@ -13,6 +13,18 @@ pub(super) enum WindowKind {
     About,
 }
 
+impl WindowKind {
+    fn title(&self) -> String {
+        match self {
+            Self::About => crate::tr!("auxiliary_window.about"; arg0 = crate::APP_NAME),
+            Self::NewBackup => crate::tr!("auxiliary_window.new_backup").into(),
+            Self::Editor => crate::tr!("auxiliary_window.edit_config_toml").into(),
+            Self::Settings => crate::tr!("auxiliary_window.settings").into(),
+            Self::Versions(name) => crate::tr!("auxiliary_window.version_history"; name = name),
+        }
+    }
+}
+
 pub(super) enum WindowContent {
     Editor(ConfigEditor),
     Settings(SettingsForm),
@@ -26,6 +38,8 @@ pub(super) struct AuxiliaryWindow {
     pub(super) content: WindowContent,
     pub(super) error: String,
     pub(super) message: String,
+    kind: WindowKind,
+    language: crate::i18n::Language,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -91,32 +105,12 @@ fn open_auxiliary_window(
     if activate_auxiliary(&owner, &kind, cx) {
         return;
     }
-    let (title, default_size, minimum_size) = match &kind {
-        WindowKind::About => (
-            format!("关于 {}", crate::APP_NAME),
-            size(px(440.), px(260.)),
-            size(px(360.), px(240.)),
-        ),
-        WindowKind::NewBackup => (
-            "新建备份".to_string(),
-            size(px(480.), px(240.)),
-            size(px(380.), px(240.)),
-        ),
-        WindowKind::Editor => (
-            "编辑 config.toml".to_string(),
-            size(px(880.), px(640.)),
-            size(px(560.), px(380.)),
-        ),
-        WindowKind::Settings => (
-            "全局设置".to_string(),
-            size(px(600.), px(520.)),
-            size(px(460.), px(380.)),
-        ),
-        WindowKind::Versions(name) => (
-            format!("历史版本 · {name}"),
-            size(px(720.), px(520.)),
-            size(px(600.), px(360.)),
-        ),
+    let (default_size, minimum_size) = match &kind {
+        WindowKind::About => (size(px(440.), px(260.)), size(px(360.), px(240.))),
+        WindowKind::NewBackup => (size(px(480.), px(240.)), size(px(380.), px(240.))),
+        WindowKind::Editor => (size(px(880.), px(640.)), size(px(560.), px(380.))),
+        WindowKind::Settings => (size(px(600.), px(520.)), size(px(460.), px(380.))),
+        WindowKind::Versions(_) => (size(px(720.), px(520.)), size(px(600.), px(360.))),
     };
     let (bounds, display_id) = crate::window_placement::centered_on_main(default_size, cx);
     let options = WindowOptions {
@@ -124,7 +118,7 @@ fn open_auxiliary_window(
         display_id,
         window_min_size: Some(minimum_size),
         titlebar: Some(TitlebarOptions {
-            title: Some(title.into()),
+            title: Some(kind.title().into()),
             ..Default::default()
         }),
         ..Default::default()
@@ -143,7 +137,7 @@ fn open_auxiliary_window(
         }),
         Err(error) => {
             owner.update(cx, |owner, cx| {
-                owner.message = format!("无法打开窗口：{error:#}");
+                owner.message = crate::tr!("auxiliary_window.could_not_open_the_window"; error = format!("{:#}", error));
                 owner.is_error = true;
                 cx.notify();
             });
@@ -164,7 +158,7 @@ impl AuxiliaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let content = match kind {
+        let content = match &kind {
             WindowKind::About => WindowContent::About,
             WindowKind::NewBackup => WindowContent::NewBackup(BackupForm::new(window, cx)),
             WindowKind::Editor => {
@@ -173,7 +167,9 @@ impl AuxiliaryWindow {
             WindowKind::Settings => {
                 WindowContent::Settings(SettingsForm::new(settings, window, cx))
             }
-            WindowKind::Versions(name) => WindowContent::Versions(VersionHistory::new(name)),
+            WindowKind::Versions(name) => {
+                WindowContent::Versions(VersionHistory::new(name.clone()))
+            }
         };
         let focus = cx.focus_handle();
         let initial_focus = match &content {
@@ -183,7 +179,25 @@ impl AuxiliaryWindow {
             WindowContent::NewBackup(form) => form.name.focus_handle(cx),
         };
         initial_focus.focus(window, cx);
-        let mut subscriptions = vec![cx.observe(&owner, |_, _, cx| cx.notify())];
+        let mut subscriptions = vec![cx.observe_in(&owner, window, |this, _, window, cx| {
+            let language = crate::i18n::language();
+            if this.language != language {
+                this.language = language;
+                window.set_window_title(&this.kind.title());
+                this.error.clear();
+                this.message.clear();
+                if let WindowContent::NewBackup(form) = &this.content {
+                    form.name.update(cx, |input, cx| {
+                        input.set_placeholder(
+                            crate::tr!("new_backup_window.for_example_personal_work_backup"),
+                            window,
+                            cx,
+                        );
+                    });
+                }
+            }
+            cx.notify();
+        })];
         subscriptions.push(cx.subscribe_in(
             &owner,
             window,
@@ -259,6 +273,8 @@ impl AuxiliaryWindow {
             content,
             error: String::new(),
             message: String::new(),
+            kind,
+            language: crate::i18n::language(),
             focus,
             _subscriptions: subscriptions,
         }
@@ -283,7 +299,8 @@ impl AuxiliaryWindow {
 
     fn allow_close(&mut self, discard: bool, cx: &mut Context<Self>) -> bool {
         if self.owner.read(cx).operation_pending() {
-            self.error = "正在处理操作，请等待完成后再关闭窗口。".into();
+            self.error =
+                crate::tr!("auxiliary_window.an_operation_is_in_progress_wait_for_it_to").into();
             cx.notify();
             return false;
         }
@@ -325,7 +342,7 @@ impl AuxiliaryWindow {
             .border_color(cx.theme().border)
             .children(pending.then(|| {
                 Button::new("continue-editing")
-                    .label("继续编辑")
+                    .label(crate::tr!("auxiliary_window.keep_editing"))
                     .disabled(busy)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let WindowContent::Editor(editor) = &mut this.content {
@@ -337,7 +354,7 @@ impl AuxiliaryWindow {
             }))
             .children(pending.then(|| {
                 Button::new("discard-changes")
-                    .label("放弃修改")
+                    .label(crate::tr!("auxiliary_window.discard_changes"))
                     .danger()
                     .disabled(busy)
                     .on_click(
@@ -349,7 +366,7 @@ impl AuxiliaryWindow {
                     Button::new("create-backup")
                         .primary()
                         .icon(IconName::Save)
-                        .label("创建并保存")
+                        .label(crate::tr!("auxiliary_window.create_and_save"))
                         .disabled(
                             !self.owner.read(cx).can_backup()
                                 || form.name.read(cx).value().trim().is_empty(),
@@ -363,7 +380,7 @@ impl AuxiliaryWindow {
                     Button::new("save-config")
                         .primary()
                         .icon(IconName::Save)
-                        .label("保存")
+                        .label(crate::tr!("auxiliary_window.save"))
                         .disabled(busy || !dirty)
                         .on_click(cx.listener(|this, _, window, cx| this.save_editor(window, cx))),
                 ),
@@ -371,7 +388,7 @@ impl AuxiliaryWindow {
                     Button::new("save-settings")
                         .primary()
                         .icon(IconName::Save)
-                        .label("保存设置")
+                        .label(crate::tr!("auxiliary_window.save_settings"))
                         .disabled(busy)
                         .on_click(
                             cx.listener(|this, _, window, cx| this.save_settings(window, cx)),

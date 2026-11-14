@@ -1,8 +1,10 @@
 # Codex Switch
 
+[English](./README_EN.md)
+
 一个基于 Rust 和 GPUI Kit 的本地 Codex 配置管理工具，支持 Windows 和 macOS，方便在不同账号、供应商和模型配置之间切换。
 
-<img src="./docs/screenshot.png" alt="Codex Switch 应用截图" width="1000" />
+<img src="./docs/screenshot_zh.png" alt="Codex Switch 应用截图" width="1000" />
 
 ## 下载
 
@@ -13,7 +15,7 @@
 | Windows | [MSI 安装包](https://github.com/luoluoqixi/codex-switch/releases/latest/download/codex-switch-windows.msi) |
 | macOS | [DMG 安装包](https://github.com/luoluoqixi/codex-switch/releases/latest/download/codex-switch-macos.dmg) |
 
-## windows
+## Windows
 
 ```sh
 cargo bundle --release --format wxsmsi
@@ -32,6 +34,8 @@ open "target/release/bundle/osx/Codex Switch.app"
 
 ## 功能
 
+- **多语言**：支持 English 和简体中文。首次启动时检测系统语言，中文系统使用简体中文，其他系统使用英文；在设置中选择语言并保存后立即生效。语言选择会保留，后续启动沿用已保存的选择。
+
 - **配置管理**：查看配置列表、当前使用状态、供应商和模型，支持按名称或备份时间排序。
 - **备份与切换**：按名称管理 `config.toml` 和 `auth.json`，切换前自动备份当前文件；切换配置及备份到其他配置目录前需确认。
 - **历史版本**：查看、还原或删除指定版本，默认保留最新 10 个版本，数量可在设置中调整。
@@ -45,4 +49,4 @@ open "target/release/bundle/osx/Codex Switch.app"
 
 主题功能基于 [Codex Dream Skin](https://github.com/Fei-Away/Codex-Dream-Skin) 的渲染器集成。可从 [DreamSkin 主题库](https://dreamskin.cc/gallery) 下载主题，也可通过主界面的主题库按钮打开。
 
-主题默认关闭。在设置中可指定主题目录；留空时，macOS 应用包使用上述用户主题目录，windows使用程序旁的 `Themes`。导入 ZIP 时按根目录（或第一个非点号开头文件夹）的 `manifest.json` 中的 `themeId` 建立主题文件夹，不做版本或哈希校验。手动解压的主题也会自动识别；在下拉框中选择主题后，可通过“效果…”调整背景透明度。
+主题默认关闭。在设置中可指定主题目录；留空时，macOS 应用包使用 `~/Library/Application Support/Codex Switch/Themes`，Windows 使用程序旁的 `Themes`。导入 ZIP 时按根目录（或第一个非点号开头文件夹）的 `manifest.json` 中的 `themeId` 建立主题文件夹，不做版本或哈希校验。手动解压的主题也会自动识别；在下拉框中选择主题后，可通过“效果…”调整背景透明度。

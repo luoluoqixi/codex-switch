@@ -39,7 +39,9 @@ pub(super) fn verify_listener(port: u16, expected: Option<&Path>) -> Result<()> 
         }
         let address = row.dwLocalAddr.to_ne_bytes();
         if address == [0, 0, 0, 0] {
-            bail!("主题调试端口 {port} 绑定了所有网络接口，请关闭该会话并通过本工具重新打开 Codex");
+            bail!(
+                crate::tr!("identity.theme_debugging_port_is_bound_to_all_network_interfaces"; port = port)
+            );
         }
         if address == [127, 0, 0, 1] {
             owners.push(row.dwOwningPid);
@@ -56,7 +58,7 @@ pub(super) fn verify_listener(port: u16, expected: Option<&Path>) -> Result<()> 
         }
         if row.ucLocalAddr == [0; 16] {
             bail!(
-                "主题调试端口 {port} 绑定了所有 IPv6 网络接口，请关闭该会话并通过本工具重新打开 Codex"
+                crate::tr!("identity.theme_debugging_port_is_bound_to_all_ipv6_network"; port = port)
             );
         }
         if row.ucLocalAddr == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1] {
@@ -67,16 +69,16 @@ pub(super) fn verify_listener(port: u16, expected: Option<&Path>) -> Result<()> 
     owners.dedup();
     for owner in owners {
         let actual =
-            executable(owner).with_context(|| format!("无法确认主题调试端口 {port} 的进程身份"))?;
+            executable(owner).with_context(|| crate::tr!("identity.could_not_verify_the_process_using_theme_debugging_port"; port = port))?;
         if let Some(expected) = expected {
             ensure!(
                 same_path(&actual, expected)?,
-                "主题调试端口 {port} 已被其他应用占用；请关闭占用程序后重试"
+                crate::tr!("identity.theme_debugging_port_is_in_use_by_another_app"; port = port)
             );
         } else {
             ensure!(
                 looks_like_codex(&actual),
-                "主题调试端口 {port} 不属于已识别的 Codex；请通过本工具重新打开 Codex"
+                crate::tr!("identity.theme_debugging_port_does_not_belong_to_a_recognized"; port = port)
             );
         }
     }
@@ -97,8 +99,7 @@ fn tcp_table(family: u32) -> Result<Vec<u8>> {
     };
     ensure!(
         initial == 0 || initial == 122,
-        "无法查询系统 TCP 监听者：{}",
-        std::io::Error::from_raw_os_error(initial as i32)
+        crate::tr!("identity.could_not_query_system_tcp_listeners"; arg0 = std::io::Error::from_raw_os_error(initial as i32))
     );
     for _ in 0..4 {
         let mut bytes = vec![0u8; size.max(4) as usize];
@@ -117,29 +118,40 @@ fn tcp_table(family: u32) -> Result<Vec<u8>> {
         }
         ensure!(
             result == 0,
-            "无法读取系统 TCP 监听者：{}",
-            std::io::Error::from_raw_os_error(result as i32)
+            crate::tr!("identity.could_not_read_system_tcp_listeners"; arg0 = std::io::Error::from_raw_os_error(result as i32))
         );
-        ensure!(size as usize <= bytes.len(), "系统 TCP 监听表长度无效");
+        ensure!(
+            size as usize <= bytes.len(),
+            crate::tr!("identity.invalid_system_tcp_listener_table_length")
+        );
         bytes.truncate(size as usize);
         return Ok(bytes);
     }
-    bail!("系统 TCP 监听表变化过快，请重试")
+    bail!(crate::tr!(
+        "identity.the_system_tcp_listener_table_changed_too_quickly_try"
+    ))
 }
 
 fn table_rows<T: Copy>(bytes: &[u8], offset: usize) -> Result<Vec<T>> {
     let count = u32::from_ne_bytes(
         bytes
             .get(..4)
-            .context("系统 TCP 监听表头无效")?
+            .context(crate::tr!(
+                "identity.invalid_system_tcp_listener_table_header"
+            ))?
             .try_into()
             .unwrap(),
     ) as usize;
     let end = count
         .checked_mul(size_of::<T>())
         .and_then(|n| n.checked_add(offset))
-        .context("系统 TCP 监听表长度溢出")?;
-    ensure!(end <= bytes.len(), "系统 TCP 监听表不完整");
+        .context(crate::tr!(
+            "identity.system_tcp_listener_table_length_overflow"
+        ))?;
+    ensure!(
+        end <= bytes.len(),
+        crate::tr!("identity.incomplete_system_tcp_listener_table")
+    );
     // The byte buffer need not be aligned to the Win32 structure. Copy each
     // bounded row with an unaligned read instead of creating invalid references.
     Ok((0..count)
@@ -162,8 +174,9 @@ impl Drop for ProcessHandle {
 
 fn executable(pid: u32) -> Result<PathBuf> {
     let handle = ProcessHandle(
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
-            .context("无法读取端口所属进程")?,
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.context(
+            crate::tr!("identity.could_not_read_the_process_using_the_port"),
+        )?,
     );
     let mut buffer = vec![0u16; 32768];
     let mut length = buffer.len() as u32;
@@ -175,15 +188,21 @@ fn executable(pid: u32) -> Result<PathBuf> {
             &mut length,
         )
     }
-    .context("无法读取端口所属应用路径")?;
+    .context(crate::tr!(
+        "identity.could_not_read_the_app_path_for_the_port"
+    ))?;
     Ok(PathBuf::from(OsString::from_wide(
         &buffer[..length as usize],
     )))
 }
 
 fn same_path(actual: &Path, expected: &Path) -> Result<bool> {
-    let actual = fs::canonicalize(actual).context("无法确认调试进程的实际路径")?;
-    let expected = fs::canonicalize(expected).context("无法确认已选择应用的实际路径")?;
+    let actual = fs::canonicalize(actual).context(crate::tr!(
+        "identity.could_not_verify_the_debugging_process_s_actual_path"
+    ))?;
+    let expected = fs::canonicalize(expected).context(crate::tr!(
+        "identity.could_not_verify_the_selected_app_s_actual_path"
+    ))?;
     Ok(actual
         .to_string_lossy()
         .eq_ignore_ascii_case(&expected.to_string_lossy()))
@@ -216,7 +235,7 @@ mod tests {
             verify_listener(port, None)
                 .unwrap_err()
                 .to_string()
-                .contains("不属于")
+                .contains(&crate::tr!("identity.theme_debugging_port_does_not_belong_to_a_recognized"; port = port))
         );
         // The same listener is accepted when its exact executable was identified
         // by the caller, exercising QueryFullProcessImageNameW and canonicalize.

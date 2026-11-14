@@ -116,16 +116,20 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
     // Pass user paths as data, never as PowerShell source or a command line fragment.
     command.env("CODEX_SWITCH_APPS", serde_json::to_string(&specs)?);
     let bytes = output(command)?;
-    let text = String::from_utf8(bytes).context("系统应用信息编码无效")?;
+    let text = String::from_utf8(bytes).context(crate::tr!(
+        "windows.invalid_system_application_information_encoding"
+    ))?;
     let values: Vec<Value> = serde_json::from_str(text.trim_start_matches('\u{feff}').trim())
-        .context("无法解析系统应用信息")?;
+        .context(crate::tr!(
+            "windows.could_not_parse_system_application_information"
+        ))?;
     DesktopApp::ALL
         .into_iter()
         .map(|app| {
             let value = values
                 .iter()
                 .find(|v| v["name"].as_str() == Some(app.name()))
-                .context("系统应用信息不完整")?;
+                .context(crate::tr!("windows.incomplete_system_application_information"))?;
             Ok(AppStatus {
                 app,
                 debug_endpoint: false,
@@ -136,14 +140,8 @@ pub(super) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned),
                 problem: match value["problem"].as_str() {
-                    Some("path") => Some(format!(
-                        "{} 路径无效，请在设置中选择桌面应用的 .exe 文件。",
-                        app.name()
-                    )),
-                    Some("process") => Some(format!(
-                        "无法确认 {} 的进程路径，请检查应用权限后刷新。",
-                        app.name()
-                    )),
+                    Some("path") => Some(crate::tr!("windows.invalid_path_select_the_desktop_app_s_exe_in"; arg0 = app.name())),
+                    Some("process") => Some(crate::tr!("windows.could_not_verify_the_process_path_for_check_permissions"; arg0 = app.name())),
                     _ => None,
                 },
             })
@@ -160,7 +158,9 @@ pub(super) fn close(status: &AppStatus, paths: &[String; 1]) -> Result<()> {
     // the new configuration instead of reconnecting to an existing process.
     let root = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
-        .context("无法获取 Windows 系统目录")?;
+        .context(crate::tr!(
+            "windows.could_not_locate_the_windows_system_directory"
+        ))?;
     let mut command = Command::new(root.join("System32/taskkill.exe"));
     command.args(["/F", "/T"]);
     for pid in &status.pids {
@@ -169,16 +169,17 @@ pub(super) fn close(status: &AppStatus, paths: &[String; 1]) -> Result<()> {
     if let Err(error) = output(command) {
         // /T may already have removed another PID included in the same request.
         // A nonzero result is harmless only when the application actually exited.
-        let after = inspect(paths).context("关闭命令失败，且无法重新确认应用状态")?;
+        let after = inspect(paths).context(crate::tr!(
+            "windows.the_close_command_failed_and_the_app_status_could"
+        ))?;
         let after = after
             .iter()
             .find(|app| app.app() == status.app())
-            .context("关闭后无法读取应用状态")?;
+            .context(crate::tr!(
+                "windows.could_not_read_the_app_status_after_closing"
+            ))?;
         if after.is_running() || after.problem().is_some() {
-            return Err(error).context(format!(
-                "无法结束 {} 进程树，请检查应用是否以管理员身份运行，以及当前账户的结束进程权限",
-                status.app().name()
-            ));
+            return Err(error).context(crate::tr!("windows.could_not_stop_the_process_tree_check_whether_the"; arg0 = status.app().name()));
         }
     }
     Ok(())
@@ -208,19 +209,20 @@ pub(super) fn launch(status: &AppStatus) -> Result<()> {
     if let Some(id) = &status.registered_id {
         return activate_with_arguments(id, &theme_arguments).with_context(|| {
             match (&status.path, direct_error) {
-                (Some(path), Some(error)) => format!(
-                    "直接启动 {} 失败：{error}；Windows 应用入口启动也失败",
-                    path.display()
-                ),
-                _ => "Windows 应用入口启动失败，无法确认可执行文件位置；请在设置中指定 ChatGPT.exe"
+                (Some(path), Some(error)) => crate::tr!("windows.could_not_start_directly_windows_app_activation_also_failed"; arg0 = path.display(), error = error),
+                _ => crate::tr!("windows.windows_app_activation_failed_and_the_executable_could_not")
                     .into(),
             }
         });
     }
     if let Some(error) = direct_error {
-        return Err(error).context("无法直接启动 ChatGPT.exe，请检查应用路径和访问权限");
+        return Err(error).context(crate::tr!(
+            "windows.could_not_start_chatgpt_exe_directly_check_the_path"
+        ));
     }
-    bail!("无法以主题模式打开应用，请在设置中选择 ChatGPT.exe 的完整路径");
+    bail!(crate::tr!(
+        "windows.could_not_open_the_app_with_theme_support_select"
+    ));
 }
 
 fn activate_with_arguments(id: &str, arguments: &[std::ffi::OsString]) -> Result<()> {
@@ -229,7 +231,7 @@ fn activate_with_arguments(id: &str, arguments: &[std::ffi::OsString]) -> Result
             .is_some_and(|(family, app)| !family.is_empty()
                 && !app.is_empty()
                 && !app.contains('!')),
-        "Windows 应用启动标识无效，请刷新后重试或在设置中指定 ChatGPT.exe"
+        crate::tr!("windows.invalid_windows_app_activation_id_refresh_and_try_again")
     );
     use windows::{
         Win32::{
@@ -252,10 +254,14 @@ fn activate_with_arguments(id: &str, arguments: &[std::ffi::OsString]) -> Result
         let result = (|| -> Result<()> {
             let manager: IApplicationActivationManager =
                 CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)
-                    .context("无法初始化 Windows 应用启动器")?;
+                    .context(crate::tr!(
+                        "windows.could_not_initialize_the_windows_app_launcher"
+                    ))?;
             manager
                 .ActivateApplication(&HSTRING::from(id), &HSTRING::from(line), AO_NONE)
-                .context("无法以主题参数打开应用，请手动退出后重试")?;
+                .context(crate::tr!(
+                    "windows.could_not_open_the_app_with_theme_arguments_quit"
+                ))?;
             Ok(())
         })();
         if initialized {
@@ -339,6 +345,9 @@ function Get-Process {
     #[test]
     fn desktop_shortcut_cannot_be_used_as_packaged_app_activation_id() {
         let error = activate_with_arguments("com.openai.codex", &[]).unwrap_err();
-        assert!(error.to_string().contains("启动标识无效"));
+        assert_eq!(
+            error.to_string(),
+            crate::tr!("windows.invalid_windows_app_activation_id_refresh_and_try_again")
+        );
     }
 }

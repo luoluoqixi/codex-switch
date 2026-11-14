@@ -37,7 +37,10 @@ fn batch_zip_import_continues_after_a_failure_and_reports_partial_success() {
         .import_files(root.to_str().unwrap(), &[first, bad, last])
         .unwrap_err()
         .to_string();
-    assert!(error.contains("已导入 2 个，1 个失败"));
+    assert!(
+        error
+            .contains(&crate::tr!("themes.imported_failed_n_n"; imported = 2, arg0 = 1, arg1 = ""))
+    );
     assert!(error.contains("bad.zip"));
     assert!(root.join("first/theme.json").is_file());
     assert!(root.join("last/theme.json").is_file());
@@ -103,7 +106,10 @@ fn images_and_zips_can_be_imported_together_without_overwriting_same_name_images
     let message = service
         .import_files(root.to_str().unwrap(), &[source.clone(), zip, source])
         .unwrap();
-    assert!(message.contains("已导入 3 个主题"));
+    assert_eq!(
+        message,
+        crate::tr!("themes.imported_themes_select_one_from_the_dropdown"; imported = 3)
+    );
     let entries = scan(&root).unwrap();
     assert_eq!(entries.len(), 3);
     let images: Vec<_> = entries

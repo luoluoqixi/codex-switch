@@ -34,7 +34,9 @@ impl SingleInstance {
     }
 
     fn acquire_in(directory: &Path) -> Result<Option<Self>> {
-        std::fs::create_dir_all(directory).context("无法创建单实例锁目录")?;
+        std::fs::create_dir_all(directory).context(crate::tr!(
+            "single_instance.could_not_create_the_single_instance_lock_directory"
+        ))?;
         // Never delete or replace this file: another process may already have it
         // open. Only ownership of the OS lock determines whether an app is alive.
         let lock = OpenOptions::new()
@@ -43,23 +45,32 @@ impl SingleInstance {
             .create(true)
             .truncate(false)
             .open(directory.join("instance.lock"))
-            .context("无法打开单实例锁文件")?;
+            .context(crate::tr!(
+                "single_instance.could_not_open_the_single_instance_lock_file"
+            ))?;
         match lock.try_lock() {
             Ok(()) => Self::listen(lock, directory).map(Some),
             Err(TryLockError::WouldBlock) => {
                 if let Err(error) = notify_existing(directory) {
-                    eprintln!("程序已在运行，但未能唤起主窗口：{error:#}");
+                    eprintln!(
+                        "{}",
+                        crate::tr!("single_instance.the_app_is_running_but_its_main_window_could"; error = format!("{:#}", error))
+                    );
                 }
                 Ok(None)
             }
-            Err(TryLockError::Error(error)) => Err(error).context("无法获取单实例锁"),
+            Err(TryLockError::Error(error)) => Err(error).context(crate::tr!(
+                "single_instance.could_not_acquire_the_single_instance_lock"
+            )),
         }
     }
 
     fn listen(lock: File, directory: &Path) -> Result<Self> {
         // Let the OS select a free loopback port; no fixed port can conflict with
         // another application. Keep metadata separate from the Windows-locked file.
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).context("无法创建单实例唤醒通道")?;
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).context(crate::tr!(
+            "single_instance.could_not_create_the_instance_activation_channel"
+        ))?;
         let address = socket.local_addr()?;
         let listener = socket.try_clone()?;
         let (sender, requests) = async_channel::bounded(1);
@@ -92,13 +103,13 @@ impl SingleInstance {
                                     | ErrorKind::ConnectionRefused
                             ) => {}
                         Err(error) => {
-                            eprintln!("单实例唤醒通道已停止：{error}");
+                            eprintln!("{}", crate::tr!("single_instance.the_instance_activation_channel_stopped"; error = error));
                             break;
                         }
                     }
                 }
             })
-            .context("无法启动单实例唤醒接收器")?;
+            .context(crate::tr!("single_instance.could_not_start_the_instance_activation_listener"))?;
         let instance = Self {
             _lock: lock,
             requests,
@@ -111,7 +122,9 @@ impl SingleInstance {
             directory.join("instance.endpoint"),
             format!("{} {}\n", std::process::id(), address.port()),
         )
-        .context("无法保存单实例唤醒通道信息")?;
+        .context(crate::tr!(
+            "single_instance.could_not_save_the_instance_activation_endpoint"
+        ))?;
         Ok(instance)
     }
 }
@@ -146,9 +159,20 @@ fn notify_existing(directory: &Path) -> Result<()> {
 fn send_activation(directory: &Path) -> Result<()> {
     let metadata = std::fs::read_to_string(directory.join("instance.endpoint"))?;
     let mut fields = metadata.split_whitespace();
-    let pid: u32 = fields.next().context("缺少单实例进程 ID")?.parse()?;
-    let port: u16 = fields.next().context("缺少单实例唤醒端口")?.parse()?;
-    anyhow::ensure!(pid != 0 && port != 0, "单实例唤醒通道信息无效");
+    let pid: u32 = fields
+        .next()
+        .context(crate::tr!("single_instance.missing_instance_process_id"))?
+        .parse()?;
+    let port: u16 = fields
+        .next()
+        .context(crate::tr!(
+            "single_instance.missing_instance_activation_port"
+        ))?
+        .parse()?;
+    anyhow::ensure!(
+        pid != 0 && port != 0,
+        crate::tr!("single_instance.invalid_instance_activation_endpoint")
+    );
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     socket.connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))?;
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -161,7 +185,10 @@ fn send_activation(directory: &Path) -> Result<()> {
     socket.send(SHOW_REQUEST)?;
     let mut reply = [0; SHOW_ACK.len() + 1];
     let length = socket.recv(&mut reply)?;
-    anyhow::ensure!(&reply[..length] == SHOW_ACK, "单实例唤醒通道未确认请求");
+    anyhow::ensure!(
+        &reply[..length] == SHOW_ACK,
+        crate::tr!("single_instance.the_instance_activation_request_was_not_acknowledged")
+    );
     Ok(())
 }
 
@@ -174,12 +201,16 @@ fn state_directory() -> Result<PathBuf> {
                 std::env::var_os("USERPROFILE")
                     .map(|home| PathBuf::from(home).join("AppData/Local"))
             })
-            .context("无法获取当前用户的应用数据目录")?;
+            .context(crate::tr!(
+                "single_instance.could_not_find_the_current_user_s_application_data"
+            ))?;
         Ok(local_data.join("Codex Switch"))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let home = std::env::var_os("HOME").context("无法获取用户主目录")?;
+        let home = std::env::var_os("HOME").context(crate::tr!(
+            "single_instance.could_not_find_your_home_directory"
+        ))?;
         #[cfg(target_os = "macos")]
         let relative = "Library/Application Support/Codex Switch";
         #[cfg(not(target_os = "macos"))]

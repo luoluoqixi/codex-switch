@@ -19,8 +19,10 @@ impl AuxiliaryWindow {
                 .p_4()
                 .gap_3()
                 .child(div().text_lg().font_semibold().child(crate::APP_NAME))
-                .child(div().child(format!("版本 {}", crate::APP_VERSION)))
-                .child(div().child("本地 Codex 配置切换与备份工具"))
+                .child(div().child(crate::tr!("about_window.version"; arg0 = crate::APP_VERSION)))
+                .child(div().child(crate::tr!(
+                    "about_window.a_local_codex_profile_switcher_and_backup_tool"
+                )))
                 .child(
                     div()
                         .text_xs()
@@ -34,7 +36,9 @@ impl AuxiliaryWindow {
                     Link::new("about-github")
                         .href(crate::APP_REPOSITORY)
                         .open_with(|url, _, _, cx| cx.open_url(url))
-                        .accessibility_label("在浏览器中打开 GitHub 项目 luoluoqixi/codex-switch")
+                        .accessibility_label(crate::tr!(
+                            "about_window.open_luoluoqixi_codex_switch_on_github_in_your_browser"
+                        ))
                         .text_color(cx.theme().link)
                         .text_decoration_1()
                         .text_decoration_color(cx.theme().link)

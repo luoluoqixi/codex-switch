@@ -12,23 +12,29 @@ pub(super) fn import(path: &Path, root: &Path) -> Result<()> {
             extension.as_str(),
             "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "avif"
         ),
-        "请选择 ZIP 或 PNG、JPG、JPEG、WebP、GIF、BMP、AVIF 图片"
+        crate::tr!("image_import.select_a_zip_or_a_png_jpg_jpeg_webp")
     );
     let name = path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .filter(|name| !name.trim().is_empty())
-        .unwrap_or("背景图");
+        .unwrap_or(crate::tr!("image_import.background"));
     let folder = theme_folder_name(name)?;
-    fs::create_dir_all(root).context("无法创建主题目录")?;
+    fs::create_dir_all(root).context(crate::tr!(
+        "image_import.could_not_create_the_theme_directory"
+    ))?;
     // A unique folder preserves existing themes and cleans itself up on failure.
     let directory = tempfile::Builder::new()
         .prefix(&format!("{folder}-"))
         .tempdir_in(root)
-        .context("无法创建图片主题文件夹")?;
+        .context(crate::tr!(
+            "image_import.could_not_create_the_image_theme_folder"
+        ))?;
     let id = directory.path().file_name().unwrap().to_string_lossy();
     let image = format!("background.{extension}");
-    fs::copy(path, directory.path().join(&image)).context("无法复制背景图片")?;
+    fs::copy(path, directory.path().join(&image)).context(crate::tr!(
+        "image_import.could_not_copy_the_background_image"
+    ))?;
     let theme = json!({
         "id": id,
         "name": name,
@@ -40,12 +46,16 @@ pub(super) fn import(path: &Path, root: &Path) -> Result<()> {
         directory.path().join("theme.json"),
         serde_json::to_vec_pretty(&theme)?,
     )
-    .context("无法生成图片主题配置")?;
+    .context(crate::tr!(
+        "image_import.could_not_generate_the_image_theme_configuration"
+    ))?;
     fs::write(
         directory.path().join("manifest.json"),
         serde_json::to_vec_pretty(&json!({"themeId": id}))?,
     )
-    .context("无法生成图片主题清单")?;
+    .context(crate::tr!(
+        "image_import.could_not_generate_the_image_theme_manifest"
+    ))?;
     let _ = directory.keep();
     Ok(())
 }

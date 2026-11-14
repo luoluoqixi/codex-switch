@@ -30,7 +30,7 @@ pub(crate) fn start(store: Store, cx: &mut App) {
     let (main_window, owner) = open_window(main_options(cx), cx, |window, cx| {
         cx.new(|cx| Switcher::new(store, window, cx))
     })
-    .expect("无法打开 Codex Switch 窗口");
+    .expect(crate::tr!("shell.could_not_open_the_codex_switch_window"));
     attach_main_close(main_window, &owner, cx);
     cx.set_global(AppShell {
         owner,
@@ -130,7 +130,10 @@ pub(crate) fn show_main(cx: &mut App) -> Option<AnyWindowHandle> {
             Some(handle)
         }
         Err(error) => {
-            eprintln!("无法显示主窗口：{error:#}");
+            eprintln!(
+                "{}",
+                crate::tr!("shell.could_not_show_the_main_window"; error = format!("{:#}", error))
+            );
             None
         }
     }
@@ -207,7 +210,7 @@ fn tray_themes(cx: &App) -> Vec<TrayTheme> {
     let enabled = !owner.operation_pending();
     let mut themes = vec![TrayTheme {
         id: None,
-        name: "关闭主题".into(),
+        name: crate::tr!("shell.theme_off").into(),
         current: snapshot.selected.is_none(),
         enabled: enabled && snapshot.selected.is_some(),
     }];
@@ -262,10 +265,10 @@ fn tray_menu(
     use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     let menu = Menu::new();
-    let show = MenuItem::with_id("show", "显示主窗口", true, None);
-    let switch = Submenu::new("切换配置", true);
+    let show = MenuItem::with_id("show", crate::tr!("shell.show_main_window"), true, None);
+    let switch = Submenu::new(crate::tr!("shell.switch_profile"), true);
     if profiles.is_empty() {
-        switch.append(&MenuItem::new("暂无配置", false, None))?;
+        switch.append(&MenuItem::new(crate::tr!("shell.no_profiles"), false, None))?;
     } else {
         for profile in profiles {
             let name = if cfg!(target_os = "windows") {
@@ -282,7 +285,7 @@ fn tray_menu(
             ))?;
         }
     }
-    let theme_menu = Submenu::new("切换主题", true);
+    let theme_menu = Submenu::new(crate::tr!("shell.switch_theme"), true);
     for theme in themes {
         let id = theme
             .id
@@ -304,16 +307,21 @@ fn tray_menu(
     }
     if themes.iter().all(|theme| theme.id.is_none()) {
         theme_menu.append(&PredefinedMenuItem::separator())?;
-        theme_menu.append(&MenuItem::new("暂无主题", false, None))?;
+        theme_menu.append(&MenuItem::new(crate::tr!("shell.no_themes"), false, None))?;
     }
     menu.append_items(&[
         &show,
         &switch,
         &theme_menu,
-        &MenuItem::with_id("settings", "设置…", true, None),
-        &MenuItem::with_id("restart-chatgpt", "重启 ChatGPT…", true, None),
+        &MenuItem::with_id("settings", crate::tr!("shell.settings"), true, None),
+        &MenuItem::with_id(
+            "restart-chatgpt",
+            crate::tr!("shell.restart_chatgpt"),
+            true,
+            None,
+        ),
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id("quit", "退出 Codex Switch", true, None),
+        &MenuItem::with_id("quit", crate::tr!("shell.quit_codex_switch"), true, None),
     ])?;
     Ok(menu)
 }
@@ -333,7 +341,10 @@ fn refresh_tray_menu(cx: &mut App) {
                 shell.tray_profiles = profiles;
                 shell.tray_themes = themes;
             }
-            Err(error) => eprintln!("无法更新托盘菜单：{error:#}"),
+            Err(error) => eprintln!(
+                "{}",
+                crate::tr!("shell.could_not_update_the_tray_menu"; error = format!("{:#}", error))
+            ),
         }
     }
 }
@@ -411,7 +422,7 @@ fn install_tray(cx: &mut App) {
             let owner = cx.global::<AppShell>().owner.clone();
             owner.update(cx, |owner, cx| {
                 owner.report_shell_error(
-                    format!("托盘初始化失败，关闭主窗口将退出程序：{error:#}"),
+                    crate::tr!("shell.the_tray_could_not_be_initialized_closing_the_main"; error = format!("{:#}", error)),
                     cx,
                 )
             });

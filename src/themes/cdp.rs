@@ -48,9 +48,14 @@ struct Session {
 }
 impl Session {
     fn connect(url: &str) -> Result<Self> {
-        ensure!(valid_ws(url, "page"), "应用返回的调试连接地址无效");
+        ensure!(
+            valid_ws(url, "page"),
+            crate::tr!("cdp.the_app_returned_an_invalid_debugging_connection_address")
+        );
         let stream = connect()?;
-        let (socket, _) = tungstenite::client(url, stream).context("无法连接 Codex 调试通道")?;
+        let (socket, _) = tungstenite::client(url, stream).context(crate::tr!(
+            "cdp.could_not_connect_to_the_codex_debugging_endpoint"
+        ))?;
         Ok(Self {
             socket,
             next_id: 0,
@@ -91,13 +96,19 @@ impl Session {
         ))?;
         let deadline = Instant::now() + COMMAND_TIMEOUT;
         loop {
-            ensure!(Instant::now() < deadline, "等待 Codex 主题响应超时");
+            ensure!(
+                Instant::now() < deadline,
+                crate::tr!("cdp.timed_out_waiting_for_the_codex_theme_response")
+            );
             self.socket.get_mut().set_read_timeout(Some(
                 deadline
                     .saturating_duration_since(Instant::now())
                     .max(Duration::from_millis(1)),
             ))?;
-            let message = self.socket.read().context("无法读取 Codex 主题响应")?;
+            let message = self
+                .socket
+                .read()
+                .context(crate::tr!("cdp.could_not_read_the_codex_theme_response"))?;
             if let Message::Text(text) = message {
                 let response: Value = serde_json::from_str(&text)?;
                 if response["method"] == "Runtime.executionContextsCleared"
@@ -111,8 +122,7 @@ impl Session {
                 }
                 if let Some(error) = response.get("error") {
                     bail!(
-                        "Codex 调试调用失败：{}",
-                        error["message"].as_str().unwrap_or("未知错误")
+                        crate::tr!("cdp.codex_debugging_request_failed"; arg0 = error["message"].as_str().unwrap_or(crate::tr!("cdp.unknown_error")))
                     );
                 }
                 return Ok(response["result"].clone());
@@ -126,11 +136,10 @@ impl Session {
         )?;
         if let Some(exception) = result.get("exceptionDetails") {
             bail!(
-                "主题渲染出错：{}",
-                exception["exception"]["description"]
+                crate::tr!("cdp.theme_rendering_failed"; arg0 = exception["exception"]["description"]
                     .as_str()
                     .or_else(|| exception["text"].as_str())
-                    .unwrap_or("未知错误")
+                    .unwrap_or(crate::tr!("cdp.unknown_error")))
             );
         }
         Ok(result["result"]["value"].clone())
@@ -150,7 +159,7 @@ impl Session {
         self.script_id = Some(
             result["identifier"]
                 .as_str()
-                .context("Codex 未返回主题脚本标识")?
+                .context(crate::tr!("cdp.codex_did_not_return_a_theme_script_id"))?
                 .into(),
         );
         Ok(())
@@ -177,7 +186,7 @@ impl Session {
         if probe["codex"] != true {
             ensure!(
                 self.first_seen.elapsed() < Duration::from_secs(15),
-                "调试通道已连接，但 Codex 主窗口尚未就绪或页面结构已变化"
+                crate::tr!("cdp.the_debugging_connection_is_ready_but_the_main_codex")
             );
             return Ok(false);
         }
@@ -189,18 +198,23 @@ impl Session {
             if result["cancelled"] == true {
                 return Ok(false);
             }
-            ensure!(result["installed"] == true, "Codex 尚未确认主题生效");
+            ensure!(
+                result["installed"] == true,
+                crate::tr!("cdp.codex_has_not_confirmed_that_the_theme_is_active")
+            );
             self.generation = Some(
                 result["revision"]
                     .as_str()
-                    .context("主题渲染器未返回版本标识")?
+                    .context(crate::tr!(
+                        "cdp.the_theme_renderer_did_not_return_a_version_id"
+                    ))?
                     .into(),
             );
             let confirmation = self.evaluate(PROBE)?;
             ensure!(
                 confirmation["active"] == true
                     && confirmation["revision"].as_str() == self.generation.as_deref(),
-                "Codex 尚未确认主题样式生效"
+                crate::tr!("cdp.codex_has_not_confirmed_that_the_theme_styles_are")
             );
             self.applied = true;
         }
@@ -263,18 +277,29 @@ impl Runtime {
             {
                 return Ok(ThemeStatus::WaitingForConnection);
             }
-            Err(error) => return Err(error).context("无法读取 Codex 调试通道"),
+            Err(error) => {
+                return Err(error).context(crate::tr!(
+                    "cdp.could_not_read_the_codex_debugging_endpoint"
+                ));
+            }
         };
         let browser = version["webSocketDebuggerUrl"]
             .as_str()
-            .context("调试端口不是可用的 Codex 浏览器")?;
-        ensure!(valid_ws(browser, "browser"), "Codex 浏览器调试地址无效");
+            .context(crate::tr!(
+                "cdp.the_debugging_port_is_not_a_usable_codex_browser"
+            ))?;
+        ensure!(
+            valid_ws(browser, "browser"),
+            crate::tr!("cdp.invalid_codex_browser_debugging_address")
+        );
         if self.browser.as_deref() != Some(browser) {
             self.sessions.clear();
             self.browser = Some(browser.into());
         }
         let targets = get_json("/json/list")?;
-        let targets = targets.as_array().context("Codex 窗口列表格式无效")?;
+        let targets = targets
+            .as_array()
+            .context(crate::tr!("cdp.invalid_codex_window_list_format"))?;
         let mut alive = HashSet::new();
         let mut failure = None;
         let mut applied = 0;
@@ -299,7 +324,7 @@ impl Runtime {
                     };
                     ensure!(
                         ws.ends_with(&format!("/devtools/page/{id}")),
-                        "Codex 窗口调试标识不一致"
+                        crate::tr!("cdp.codex_window_debugging_ids_do_not_match")
                     );
                     let session = Session::connect(ws)?;
                     self.sessions.insert(id.to_string(), session);
@@ -316,8 +341,8 @@ impl Runtime {
                 let transient = message.contains("context")
                     || message.contains("Context")
                     || message.contains("navigation")
-                    || message.contains("主窗口尚未就绪")
-                    || message.contains("尚未确认");
+                    || message.contains(crate::tr!("cdp.the_main_window_is_not_ready"))
+                    || message.contains(crate::tr!("cdp.not_confirmed"));
                 let transport = error.downcast_ref::<tungstenite::Error>().is_some()
                     || error.downcast_ref::<std::io::Error>().is_some();
                 let session = self.sessions.get_mut(id);
@@ -372,8 +397,7 @@ impl Runtime {
             Ok(())
         } else {
             bail!(
-                "主题后台任务已停止，但部分窗口未能清理主题；请手动重新打开 Codex。{}",
-                failures.join("；")
+                crate::tr!("cdp.the_theme_worker_stopped_but_the_theme_could_not"; arg0 = failures.join("；"))
             );
         }
     }
@@ -413,18 +437,23 @@ fn read_http_json(stream: impl Read) -> Result<Value> {
     let mut reader = BufReader::new(stream);
     let mut header = Vec::new();
     while !header.ends_with(b"\r\n\r\n") {
-        ensure!(header.len() < 64 * 1024, "Codex 调试响应头过长");
+        ensure!(
+            header.len() < 64 * 1024,
+            crate::tr!("cdp.codex_debugging_response_headers_are_too_long")
+        );
         let mut byte = [0];
-        reader
-            .read_exact(&mut byte)
-            .context("Codex 调试响应头不完整")?;
+        reader.read_exact(&mut byte).context(crate::tr!(
+            "cdp.incomplete_codex_debugging_response_headers"
+        ))?;
         header.push(byte[0]);
     }
     ensure!(
         header.starts_with(b"HTTP/1.1 200 ") || header.starts_with(b"HTTP/1.0 200 "),
-        "Codex 调试请求失败"
+        crate::tr!("cdp.codex_debugging_request_failed_2")
     );
-    let header = std::str::from_utf8(&header).context("Codex 调试响应头编码无效")?;
+    let header = std::str::from_utf8(&header).context(crate::tr!(
+        "cdp.invalid_codex_debugging_response_header_encoding"
+    ))?;
     let length = header
         .lines()
         .filter_map(|line| line.split_once(':'))
@@ -432,17 +461,23 @@ fn read_http_json(stream: impl Read) -> Result<Value> {
             key.eq_ignore_ascii_case("Content-Length")
                 .then_some(value.trim())
         })
-        .context("Codex 调试响应缺少 Content-Length")?
+        .context(crate::tr!(
+            "cdp.the_codex_debugging_response_has_no_content_length"
+        ))?
         .parse::<usize>()
-        .context("Codex 调试响应长度无效")?;
-    ensure!(length <= 4 * 1024 * 1024, "Codex 调试响应过大");
+        .context(crate::tr!("cdp.invalid_codex_debugging_response_length"))?;
+    ensure!(
+        length <= 4 * 1024 * 1024,
+        crate::tr!("cdp.the_codex_debugging_response_is_too_large")
+    );
     let mut body = vec![0; length];
     // Chromium keeps this connection alive even with Connection: close.
     // Read the framed body, rather than waiting for an EOF that never arrives.
     reader
         .read_exact(&mut body)
-        .context("Codex 调试响应内容不完整")?;
-    serde_json::from_slice(&body).context("Codex 调试响应不是 JSON")
+        .context(crate::tr!("cdp.incomplete_codex_debugging_response_body"))?;
+    serde_json::from_slice(&body)
+        .context(crate::tr!("cdp.the_codex_debugging_response_is_not_json"))
 }
 
 #[cfg(test)]

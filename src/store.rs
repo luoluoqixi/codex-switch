@@ -44,6 +44,7 @@ pub(crate) struct BackupVersion {
 
 #[derive(Clone)]
 pub(crate) struct Settings {
+    pub language: crate::i18n::Language,
     pub max_versions: usize,
     pub chatgpt_app_path: String,
     pub theme_directory: String,
@@ -54,6 +55,7 @@ pub(crate) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: crate::i18n::Language::detect(),
             max_versions: 10,
             chatgpt_app_path: String::new(),
             theme_directory: String::new(),
@@ -114,9 +116,13 @@ impl Store {
     pub fn profile_directory(&self, name: &str) -> Result<PathBuf> {
         validate_name(name)?;
         let path = self.backups().join(name);
-        let metadata = fs::symlink_metadata(&path).context("配置目录已不存在，请刷新列表")?;
+        let metadata = fs::symlink_metadata(&path).context(crate::tr!(
+            "store.the_profile_directory_no_longer_exists_refresh_the_list"
+        ))?;
         if !metadata.is_dir() || metadata.is_symlink() {
-            bail!("配置目录无效，请刷新列表。");
+            bail!(crate::tr!(
+                "store.invalid_profile_directory_refresh_the_list"
+            ));
         }
         Ok(path)
     }
@@ -124,20 +130,24 @@ impl Store {
     pub fn version_directory(&self, name: &str, id: &str) -> Result<PathBuf> {
         anyhow::ensure!(
             !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()),
-            "备份版本标识无效"
+            crate::tr!("store.invalid_backup_version_id")
         );
         let folder = self.profile_directory(name)?;
         let path = folder.join(id);
-        let metadata = fs::symlink_metadata(&path).context("备份版本已不存在，请刷新后重试")?;
+        let metadata = fs::symlink_metadata(&path).context(crate::tr!(
+            "store.the_backup_version_no_longer_exists_refresh_and_try"
+        ))?;
         anyhow::ensure!(
             metadata.is_dir() && !metadata.is_symlink(),
-            "备份版本目录无效"
+            crate::tr!("store.invalid_backup_version_directory")
         );
-        let parent = fs::canonicalize(&folder).context("无法确认配置目录")?;
-        let resolved = fs::canonicalize(&path).context("无法确认版本目录")?;
+        let parent = fs::canonicalize(&folder)
+            .context(crate::tr!("store.could_not_verify_the_profile_directory"))?;
+        let resolved = fs::canonicalize(&path)
+            .context(crate::tr!("store.could_not_verify_the_version_directory"))?;
         anyhow::ensure!(
             resolved.parent() == Some(parent.as_path()),
-            "备份版本目录超出预期范围"
+            crate::tr!("store.the_backup_version_directory_is_outside_the_expected_location")
         );
         Ok(path)
     }
@@ -147,10 +157,12 @@ impl Store {
         let entries = match fs::read_dir(self.backups()) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(groups),
-            Err(error) => return Err(error).context("无法读取备份目录"),
+            Err(error) => {
+                return Err(error).context(crate::tr!("store.could_not_read_the_backup_directory"));
+            }
         };
         for entry in entries {
-            let entry = entry.context("无法读取配置目录")?;
+            let entry = entry.context(crate::tr!("store.could_not_read_the_profile_directory"))?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if !entry.file_type()?.is_dir()
                 || name.starts_with('.')
@@ -159,8 +171,9 @@ impl Store {
                 continue;
             }
             let mut versions = Vec::new();
-            for version in fs::read_dir(entry.path()).context("无法读取配置的备份版本")?
-            {
+            for version in fs::read_dir(entry.path()).context(crate::tr!(
+                "store.could_not_read_the_profile_s_backup_versions"
+            ))? {
                 let version = version?;
                 let id = version.file_name().to_string_lossy().into_owned();
                 if !version.file_type()?.is_dir()
@@ -233,19 +246,26 @@ impl Store {
             has_auth: files[1].is_some(),
             current_name: active_group
                 .clone()
-                .unwrap_or_else(|| "尚未归入配置目录".into()),
+                .unwrap_or_else(|| crate::tr!("store.not_assigned_to_a_profile").into()),
             ..Default::default()
         };
         if let Some(bytes) = &files[0] {
             match summarize(bytes) {
                 Ok(summary) => snapshot.current = summary,
                 Err(_) => {
-                    snapshot.warning = Some("当前 config.toml 格式无效，仍可备份原文件。".into())
+                    snapshot.warning = Some(
+                        crate::tr!(
+                            "store.the_current_config_toml_is_invalid_its_original_contents"
+                        )
+                        .into(),
+                    )
                 }
             }
         }
         if files[1].as_ref().is_some_and(|bytes| !valid_auth(bytes)) {
-            snapshot.warning = Some("当前 auth.json 格式无效，仍可备份原文件。".into());
+            snapshot.warning = Some(
+                crate::tr!("store.the_current_auth_json_is_invalid_its_original_contents").into(),
+            );
         }
         for (name, versions) in &groups {
             let latest = versions.first();
@@ -258,12 +278,16 @@ impl Store {
                 .and_then(|pair| pair[0].as_deref())
                 .and_then(|bytes| summarize(bytes).ok());
             let problem = match &saved {
-                Err(_) => Some("无法读取备份文件".into()),
-                Ok(_) if latest.is_none() => Some("暂无备份".into()),
-                Ok(pair) if pair[0].is_none() => Some("缺少 config.toml".into()),
-                Ok(_) if summary.is_none() => Some("config.toml 无效".into()),
-                Ok(pair) if pair[1].is_none() => Some("缺少 auth.json".into()),
-                Ok(pair) if !valid_auth(pair[1].as_ref().unwrap()) => Some("auth.json 无效".into()),
+                Err(_) => Some(crate::tr!("store.could_not_read_backup_files").into()),
+                Ok(_) if latest.is_none() => Some(crate::tr!("store.no_backups").into()),
+                Ok(pair) if pair[0].is_none() => {
+                    Some(crate::tr!("store.missing_config_toml").into())
+                }
+                Ok(_) if summary.is_none() => Some(crate::tr!("store.invalid_config_toml").into()),
+                Ok(pair) if pair[1].is_none() => Some(crate::tr!("store.missing_auth_json").into()),
+                Ok(pair) if !valid_auth(pair[1].as_ref().unwrap()) => {
+                    Some(crate::tr!("store.invalid_auth_json").into())
+                }
                 _ => None,
             };
             let is_current = active_group.as_ref() == Some(name);
@@ -293,11 +317,15 @@ impl Store {
                         .and_then(|f| f[0].as_deref())
                         .and_then(|bytes| summarize(bytes).ok());
                     let problem = match &saved {
-                        Err(_) => Some("无法读取备份文件".into()),
-                        Ok(f) if f[0].is_none() || f[1].is_none() => Some("备份文件不完整".into()),
-                        Ok(_) if summary.is_none() => Some("config.toml 无效".into()),
+                        Err(_) => Some(crate::tr!("store.could_not_read_backup_files").into()),
+                        Ok(f) if f[0].is_none() || f[1].is_none() => {
+                            Some(crate::tr!("store.incomplete_backup_files").into())
+                        }
+                        Ok(_) if summary.is_none() => {
+                            Some(crate::tr!("store.invalid_config_toml").into())
+                        }
                         Ok(f) if !valid_auth(f[1].as_ref().unwrap()) => {
-                            Some("auth.json 无效".into())
+                            Some(crate::tr!("store.invalid_auth_json").into())
                         }
                         _ => None,
                     };
@@ -315,7 +343,7 @@ impl Store {
                 name: name.clone(),
                 time: latest
                     .map(|v| display_time(v.stamp))
-                    .unwrap_or_else(|| "尚无版本".into()),
+                    .unwrap_or_else(|| crate::tr!("store.no_versions").into()),
                 latest_stamp: latest.map(|v| v.stamp),
                 version_count: versions.len(),
                 summary: summary.unwrap_or_default(),
@@ -329,9 +357,11 @@ impl Store {
     }
 
     pub fn read_config(&self) -> Result<String> {
-        let bytes = read_optional(&self.root.join("config.toml"))?
-            .context("config.toml 已不存在，请刷新后重试")?;
-        String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("config.toml 不是有效的 UTF-8 文件"))
+        let bytes = read_optional(&self.root.join("config.toml"))?.context(crate::tr!(
+            "store.config_toml_no_longer_exists_refresh_and_try_again"
+        ))?;
+        String::from_utf8(bytes)
+            .map_err(|_| anyhow::anyhow!(crate::tr!("store.config_toml_is_not_a_valid_utf_8_file")))
     }
 
     pub fn save_config(&self, original: &str, edited: &str) -> Result<String> {
@@ -349,23 +379,25 @@ impl Store {
             .chars()
             .count()
                 + 1;
-            bail!("TOML 格式无效，请检查第 {line} 行、第 {column} 列附近的内容。");
+            bail!(
+                crate::tr!("store.invalid_toml_check_the_content_near_line_column"; line = line, column = column)
+            );
         }
         let _lock = self.lock()?;
         let path = self.root.join("config.toml");
         anyhow::ensure!(
             read_optional(&path)?.as_deref() == Some(original.as_bytes()),
-            "config.toml 在编辑期间已被其他程序修改或删除，请重新打开后再编辑；本次修改尚未写入。"
+            crate::tr!("store.config_toml_was_changed_or_deleted_by_another_program")
         );
         replace_all(vec![(path.clone(), edited.as_bytes().to_vec())], |_| {
             if fs::read(&path)? != original.as_bytes() {
-                return Err(io::Error::other(
-                    "config.toml 在保存前发生了变化，请重新打开后重试",
-                ));
+                return Err(io::Error::other(crate::tr!(
+                    "store.config_toml_changed_before_saving_reopen_it_and_try"
+                )));
             }
             Ok(())
         })?;
-        Ok("已保存 config.toml。可重新打开 ChatGPT 或新建会话加载配置。".into())
+        Ok(crate::tr!("store.config_toml_saved_reopen_chatgpt_or_start_a_new").into())
     }
 
     pub fn create_profile(&self, name: &str) -> Result<String> {
@@ -375,7 +407,9 @@ impl Store {
         let files = self.active_files()?;
         ensure_backup_files(&files)?;
         let folder = self.backups().join(name);
-        fs::create_dir(&folder).context("无法新建配置目录，名称可能已存在")?;
+        fs::create_dir(&folder).context(crate::tr!(
+            "store.could_not_create_the_profile_directory_the_name_may"
+        ))?;
         self.save_current(name, &files)
     }
 
@@ -390,20 +424,22 @@ impl Store {
     fn save_current(&self, name: &str, files: &ActiveFiles) -> Result<String> {
         let version = self.save_version(name, files)?;
         if self.active_files()? != *files {
-            bail!("备份已保存，但当前文件同时发生了变化；请刷新后重试。");
+            bail!(crate::tr!(
+                "store.the_backup_was_saved_but_the_current_files_also"
+            ));
         }
-        self.write_state(name, &version)
-            .context("备份已保存，但无法更新当前配置记录")?;
-        Ok(format!(
-            "已保存到 {name}{}",
-            if files[0].is_none() {
-                "（仅认证文件）"
+        self.write_state(name, &version).context(crate::tr!(
+            "store.the_backup_was_saved_but_the_current_profile_record"
+        ))?;
+        Ok(
+            crate::tr!("store.saved_to"; name = name, arg0 = if files[0].is_none() {
+                crate::tr!("store.authentication_file_only")
             } else if files[1].is_none() {
-                "（缺少认证文件）"
+                crate::tr!("store.authentication_file_missing")
             } else {
                 ""
-            }
-        ))
+            }),
+        )
     }
 
     pub fn switch(&self, name: &str) -> Result<String> {
@@ -424,39 +460,51 @@ impl Store {
                 Some(id) => versions.iter().find(|v| v.id == id),
                 None => versions.first(),
             })
-            .context("备份版本已不存在，请刷新后重试")?;
+            .context(crate::tr!(
+                "store.the_backup_version_no_longer_exists_refresh_and_try"
+            ))?;
         let target = selected.files()?;
-        let config = target[0]
-            .as_ref()
-            .context("所选备份缺少 config.toml，未切换配置")?;
-        let auth = target[1]
-            .as_ref()
-            .context("所选备份缺少 auth.json，未切换配置")?;
-        summarize(config)
-            .map_err(|_| anyhow::anyhow!("所选备份的 config.toml 格式无效，未切换配置。"))?;
+        let config = target[0].as_ref().context(crate::tr!(
+            "store.the_selected_backup_has_no_config_toml_the_profile"
+        ))?;
+        let auth = target[1].as_ref().context(crate::tr!(
+            "store.the_selected_backup_has_no_auth_json_the_profile"
+        ))?;
+        summarize(config).map_err(|_| {
+            anyhow::anyhow!(crate::tr!(
+                "store.the_selected_backup_s_config_toml_is_invalid_the"
+            ))
+        })?;
         if !valid_auth(auth) {
-            bail!("所选备份的 auth.json 格式无效，未切换配置。");
+            bail!(crate::tr!(
+                "store.the_selected_backup_s_auth_json_is_invalid_the"
+            ));
         }
         let old = self.active_files()?;
         // Switching between identical copies still changes the owning folder.
         if old == target {
             self.write_state(name, &selected.id)?;
-            return Ok(format!("当前配置已关联到 {name}。"));
+            return Ok(
+                crate::tr!("store.the_current_configuration_is_now_assigned_to"; name = name),
+            );
         }
         let current_group = self.current_group(&groups, &old)?;
         let auto_backup = if old.iter().any(Option::is_some) {
-            let mut previous = current_group.unwrap_or_else(|| "切换前自动备份".into());
+            let mut previous = current_group
+                .unwrap_or_else(|| crate::tr!("store.automatic_backup_before_switching").into());
             if previous == name {
-                previous = if name == "切换前自动备份" {
-                    "切换前恢复备份"
+                previous = if name == crate::tr!("store.automatic_backup_before_switching") {
+                    crate::tr!("store.recovery_backup_before_switching")
                 } else {
-                    "切换前自动备份"
+                    crate::tr!("store.automatic_backup_before_switching")
                 }
                 .into();
             }
             let folder = self.backups().join(&previous);
             if !folder.try_exists()? {
-                fs::create_dir(&folder).context("无法创建自动备份目录")?;
+                fs::create_dir(&folder).context(crate::tr!(
+                    "store.could_not_create_the_automatic_backup_directory"
+                ))?;
             }
             let version = self.save_version(&previous, &old)?;
             Some(format!("{previous}/{version}"))
@@ -464,7 +512,9 @@ impl Store {
             None
         };
         if self.active_files()? != old {
-            bail!("当前配置在切换前发生了变化，请刷新后重试；自动备份已保留。");
+            bail!(crate::tr!(
+                "store.the_current_configuration_changed_before_switching_refresh_and_try"
+            ));
         }
         let changes = vec![
             (self.root.join("config.toml"), config.clone()),
@@ -475,23 +525,64 @@ impl Store {
             ),
         ];
         replace_all(changes, |_| Ok(())).with_context(|| match &auto_backup {
-            Some(path) => format!("切换失败，切换前的文件保留在 backups/{path}"),
-            None => "切换失败".into(),
+            Some(path) => crate::tr!("store.switch_failed_the_previous_files_are_kept_in_backups"; path = path),
+            None => crate::tr!("store.switch_failed").into(),
         })?;
-        Ok(format!(
-            "已切换到 {name}（{}）。重新打开 ChatGPT 或新建会话以加载配置。",
-            display_time(selected.stamp)
-        ))
+        Ok(
+            crate::tr!("store.switched_to_reopen_chatgpt_or_start_a_new_conversation"; name = name, arg0 = display_time(selected.stamp)),
+        )
+    }
+
+    pub(crate) fn initialize_language(&self) -> Result<crate::i18n::Language> {
+        self.initialize_language_with(crate::i18n::Language::detect())
+    }
+
+    fn initialize_language_with(
+        &self,
+        detected: crate::i18n::Language,
+    ) -> Result<crate::i18n::Language> {
+        let _lock = self.lock()?;
+        let path = self.backups().join("settings.json");
+        let mut value = read_optional(&path)?
+            .map(|bytes| serde_json::from_slice::<Value>(&bytes))
+            .transpose()
+            .context(crate::tr!("store.invalid_global_settings_format"))?
+            .unwrap_or_else(|| json!({"maxVersions": 10}));
+        anyhow::ensure!(
+            value.is_object(),
+            crate::tr!("store.invalid_global_settings_format")
+        );
+        if let Some(language) = value["language"]
+            .as_str()
+            .and_then(crate::i18n::Language::from_code)
+        {
+            return Ok(language);
+        }
+        // Migrate only the language preference. Startup must not register login
+        // items, prune backups, or replace any other existing setting.
+        value["language"] = json!(detected.code());
+        replace_all(vec![(path, serde_json::to_vec_pretty(&value)?)], |_| Ok(()))?;
+        Ok(detected)
     }
 
     fn settings(&self) -> Result<Settings> {
         let Some(bytes) = read_optional(&self.backups().join("settings.json"))? else {
             return Ok(Settings::default());
         };
-        let value: Value = serde_json::from_slice(&bytes).context("全局设置格式无效")?;
-        let count = value["maxVersions"].as_u64().context("备份保留数量无效")?;
-        anyhow::ensure!((1..=1000).contains(&count), "备份保留数量须为 1–1000");
+        let value: Value = serde_json::from_slice(&bytes)
+            .context(crate::tr!("store.invalid_global_settings_format"))?;
+        let count = value["maxVersions"]
+            .as_u64()
+            .context(crate::tr!("store.invalid_backup_retention_limit"))?;
+        anyhow::ensure!(
+            (1..=1000).contains(&count),
+            crate::tr!("store.the_backup_retention_limit_must_be_between_1_and")
+        );
         Ok(Settings {
+            language: value["language"]
+                .as_str()
+                .and_then(crate::i18n::Language::from_code)
+                .unwrap_or_else(crate::i18n::Language::detect),
             max_versions: count as usize,
             chatgpt_app_path: value["chatgptAppPath"].as_str().unwrap_or_default().into(),
             theme_directory: value["themeDirectory"].as_str().unwrap_or_default().into(),
@@ -503,7 +594,7 @@ impl Store {
     pub fn save_settings(&self, settings: &Settings) -> Result<String> {
         anyhow::ensure!(
             (1..=1000).contains(&settings.max_versions),
-            "备份保留数量须为 1–1000"
+            crate::tr!("store.the_backup_retention_limit_must_be_between_1_and")
         );
         crate::desktop::validate_paths(&settings.app_paths())?;
         let _lock = self.lock()?;
@@ -512,13 +603,17 @@ impl Store {
         let mut value = read_optional(&path)?
             .map(|bytes| serde_json::from_slice::<Value>(&bytes))
             .transpose()
-            .context("全局设置格式无效")?
+            .context(crate::tr!("store.invalid_global_settings_format"))?
             .unwrap_or_else(|| json!({}));
-        anyhow::ensure!(value.is_object(), "全局设置格式无效");
+        anyhow::ensure!(
+            value.is_object(),
+            crate::tr!("store.invalid_global_settings_format")
+        );
         value["maxVersions"] = json!(settings.max_versions);
+        value["language"] = json!(settings.language.code());
         value
             .as_object_mut()
-            .context("全局设置格式无效")?
+            .context(crate::tr!("store.invalid_global_settings_format"))?
             .remove("codexAppPath");
         value["chatgptAppPath"] = json!(settings.chatgpt_app_path);
         value["themeDirectory"] = json!(settings.theme_directory);
@@ -528,15 +623,24 @@ impl Store {
         let startup = crate::startup::apply(settings.launch_at_login, self.root())?;
         if let Err(error) = replace_all(vec![(path, bytes)], |_| Ok(())) {
             if let Err(rollback) = startup.rollback() {
-                bail!("设置保存失败：{error:#}；无法恢复开机启动设置：{rollback:#}");
+                bail!(
+                    crate::tr!("store.could_not_save_settings_could_not_restore_startup_settings"; error = format!("{:#}", error), rollback = format!("{:#}", rollback))
+                );
             }
-            return Err(error).context("设置未保存，开机启动设置已恢复");
+            return Err(error).context(crate::tr!(
+                "store.settings_were_not_saved_startup_settings_were_restored"
+            ));
         }
+        // Apply only after persistence succeeds, including when backup pruning
+        // subsequently fails. Later errors and the refreshed snapshot use it.
+        crate::i18n::set_language(settings.language);
         for name in self.groups()?.keys() {
             self.prune_versions(name, settings.max_versions)
-                .context("设置已保存，但清理旧版本失败；请检查目录权限后重试")?;
+                .context(crate::tr!(
+                    "store.settings_were_saved_but_old_versions_could_not_be"
+                ))?;
         }
-        Ok("设置已保存".to_string())
+        Ok(crate::tr!("store.settings_saved").to_string())
     }
 
     pub fn delete_version(&self, name: &str, id: &str) -> Result<String> {
@@ -546,18 +650,22 @@ impl Store {
         let version = groups
             .get(name)
             .and_then(|versions| versions.iter().find(|v| v.id == id))
-            .context("备份版本已不存在，请刷新后重试")?;
+            .context(crate::tr!(
+                "store.the_backup_version_no_longer_exists_refresh_and_try"
+            ))?;
         remove_managed_directory(&version.folder, &parent)?;
         // The active files remain in place, even when their saved copy is deleted.
-        Ok(format!(
-            "已删除 {name} 的 {} 版本，当前配置文件未改动。",
-            display_time(version.stamp)
-        ))
+        Ok(
+            crate::tr!("store.deleted_the_version_of_the_current_configuration_files_were"; name = name, arg0 = display_time(version.stamp)),
+        )
     }
 
     pub fn delete_profiles(&self, names: &[String]) -> Result<String> {
         let _lock = self.lock()?;
-        anyhow::ensure!(!names.is_empty(), "请选择要删除的备份目录");
+        anyhow::ensure!(
+            !names.is_empty(),
+            crate::tr!("store.select_the_backup_directories_to_delete")
+        );
         let names: std::collections::BTreeSet<_> = names.iter().collect();
         // Resolve all targets before beginning a batch; each removal also checks
         // the managed root and rejects links in remove_managed_directory.
@@ -574,13 +682,12 @@ impl Store {
         }
         if !failures.is_empty() {
             bail!(
-                "已完成删除 {deleted} 个目录；以下目录删除未完成：{}。请刷新列表后重试，当前配置文件未改动。",
-                failures.join("；")
+                crate::tr!("store.deleted_directories_these_could_not_be_deleted_refresh_and"; deleted = deleted, arg0 = failures.join("；"))
             );
         }
-        Ok(format!(
-            "已删除 {deleted} 个备份目录及其所有版本，当前配置文件未改动。"
-        ))
+        Ok(
+            crate::tr!("store.deleted_backup_directories_and_all_their_versions_the_current"; deleted = deleted),
+        )
     }
 
     fn delete_profile_locked(&self, name: &str) -> Result<()> {
@@ -593,8 +700,9 @@ impl Store {
             == Some(name)
         {
             // An explicit unassigned state prevents identical copies from taking ownership.
-            self.write_state("", "")
-                .context("备份目录已删除，但无法清除当前归属记录")?;
+            self.write_state("", "").context(crate::tr!(
+                "store.the_backup_directory_was_deleted_but_its_current_profile"
+            ))?;
         }
         Ok(())
     }
@@ -639,16 +747,18 @@ impl Store {
     }
 
     fn lock(&self) -> Result<File> {
-        fs::create_dir_all(self.backups()).context("无法创建备份目录")?;
+        fs::create_dir_all(self.backups())
+            .context(crate::tr!("store.could_not_create_the_backup_directory"))?;
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
             .open(self.backups().join(".codex-switch.lock"))
-            .context("无法创建操作锁")?;
-        file.try_lock()
-            .context("另一项配置操作正在进行，请稍后重试")?;
+            .context(crate::tr!("store.could_not_create_the_operation_lock"))?;
+        file.try_lock().context(crate::tr!(
+            "store.another_configuration_operation_is_in_progress_try_again_later"
+        ))?;
         Ok(file)
     }
 
@@ -659,14 +769,14 @@ impl Store {
         let pending = tempfile::Builder::new()
             .prefix(".pending-")
             .tempdir_in(&folder)
-            .context("无法准备备份目录")?;
+            .context(crate::tr!("store.could_not_prepare_the_backup_directory"))?;
         for (filename, bytes) in [("config.toml", &files[0]), ("auth.json", &files[1])] {
             if let Some(bytes) = bytes {
                 let path = pending.path().join(filename);
                 stage(&path, bytes)?
                     .persist_noclobber(&path)
                     .map_err(|error| error.error)
-                    .context("无法保存备份文件")?;
+                    .context(crate::tr!("store.could_not_save_backup_files"))?;
             }
         }
         let newest = self
@@ -682,9 +792,11 @@ impl Store {
                 stamp += 1;
                 continue;
             }
-            fs::rename(pending.path(), &path).context("无法完成备份版本")?;
-            self.prune_versions(name, limit)
-                .context("备份已保存，但清理旧版本失败")?;
+            fs::rename(pending.path(), &path)
+                .context(crate::tr!("store.could_not_finalize_the_backup_version"))?;
+            self.prune_versions(name, limit).context(crate::tr!(
+                "store.the_backup_was_saved_but_old_versions_could_not"
+            ))?;
             return Ok(version);
         }
     }
@@ -693,30 +805,39 @@ impl Store {
 // Only remove a real, direct child of the expected managed directory. In
 // particular, never recurse into a junction or symbolic link outside backups.
 fn remove_managed_directory(path: &Path, parent: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path).context("备份目录已不存在")?;
+    let metadata = fs::symlink_metadata(path)
+        .context(crate::tr!("store.the_backup_directory_no_longer_exists"))?;
     anyhow::ensure!(
         metadata.is_dir() && !metadata.is_symlink(),
-        "拒绝删除链接或无效目录"
+        crate::tr!("store.refusing_to_delete_a_link_or_invalid_directory")
     );
-    let resolved_parent = fs::canonicalize(parent).context("无法确认备份根目录")?;
-    let resolved = fs::canonicalize(path).context("无法确认待删除的备份目录")?;
+    let resolved_parent = fs::canonicalize(parent).context(crate::tr!(
+        "store.could_not_verify_the_backup_root_directory"
+    ))?;
+    let resolved = fs::canonicalize(path).context(crate::tr!(
+        "store.could_not_verify_the_backup_directory_to_delete"
+    ))?;
     anyhow::ensure!(
         resolved.parent() == Some(resolved_parent.as_path()),
-        "备份目录超出预期范围，已取消删除"
+        crate::tr!("store.the_backup_directory_is_outside_the_expected_location_deletion")
     );
-    fs::remove_dir_all(path).context("无法删除备份，请检查目录权限")
+    fs::remove_dir_all(path).context(crate::tr!(
+        "store.could_not_delete_the_backup_check_directory_permissions"
+    ))
 }
 
 fn ensure_backup_files(files: &ActiveFiles) -> Result<()> {
     if files.iter().all(Option::is_none) {
-        bail!("未找到可备份的 config.toml 或 auth.json。");
+        bail!(crate::tr!("store.no_config_toml_or_auth_json_was_found_to"));
     }
     Ok(())
 }
 
 fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() || name.starts_with('.') || name != sanitize_name(name) {
-        bail!("名称不能为空，不能包含路径符号、保留名称、首位句点或末尾空格，最多 80 个字符。");
+        bail!(crate::tr!(
+            "store.enter_a_name_of_up_to_80_characters_paths"
+        ));
     }
     Ok(())
 }
@@ -725,19 +846,23 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("无法读取 {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| crate::tr!("store.could_not_read"; arg0 = path.display()))
+        }
     }
 }
 
 fn summarize(bytes: &[u8]) -> Result<Summary> {
     // Discard parser diagnostics: they may contain source text or credentials.
-    let text = std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("配置编码无效"))?;
-    let value: toml::Value = toml::from_str(text).map_err(|_| anyhow::anyhow!("配置格式无效"))?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!(crate::tr!("store.invalid_configuration_encoding")))?;
+    let value: toml::Value = toml::from_str(text)
+        .map_err(|_| anyhow::anyhow!(crate::tr!("store.invalid_configuration_format")))?;
     Ok(Summary {
         model: value
             .get("model")
             .and_then(toml::Value::as_str)
-            .unwrap_or("默认模型")
+            .unwrap_or(crate::tr!("store.default_model"))
             .into(),
         provider: value
             .get("model_provider")
@@ -797,14 +922,20 @@ fn display_time(ms: u128) -> String {
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()
         })
-        .unwrap_or_else(|| "时间未知".into())
+        .unwrap_or_else(|| crate::tr!("store.unknown_time").into())
 }
 
 fn stage(path: &Path, bytes: &[u8]) -> Result<NamedTempFile> {
-    let parent = path.parent().context("文件路径无效")?;
-    let mut file = NamedTempFile::new_in(parent).context("无法创建临时文件")?;
-    file.write_all(bytes).context("无法写入临时文件")?;
-    file.as_file().sync_all().context("无法同步临时文件")?;
+    let parent = path
+        .parent()
+        .context(crate::tr!("store.invalid_file_path"))?;
+    let mut file = NamedTempFile::new_in(parent)
+        .context(crate::tr!("store.could_not_create_a_temporary_file"))?;
+    file.write_all(bytes)
+        .context(crate::tr!("store.could_not_write_the_temporary_file"))?;
+    file.as_file()
+        .sync_all()
+        .context(crate::tr!("store.could_not_sync_the_temporary_file"))?;
     Ok(file)
 }
 
@@ -842,11 +973,12 @@ fn replace_all(
             }
             if !rollback_errors.is_empty() {
                 bail!(
-                    "写入失败，且无法回滚 {}，请从自动备份恢复。",
-                    rollback_errors.join("、")
+                    crate::tr!("store.the_write_failed_and_could_not_be_restored_recover"; arg0 = rollback_errors.join("、"))
                 );
             }
-            return Err(error).context("写入失败，已回滚本次更改");
+            return Err(error).context(crate::tr!(
+                "store.the_write_failed_the_changes_were_rolled_back"
+            ));
         }
     }
     Ok(())
@@ -939,7 +1071,12 @@ mod tests {
         );
         store.switch("官方").unwrap();
         assert_eq!(store.load().unwrap().current.model, "original");
-        assert!(store.groups().unwrap().contains_key("切换前自动备份"));
+        assert!(
+            store
+                .groups()
+                .unwrap()
+                .contains_key(crate::tr!("store.automatic_backup_before_switching"))
+        );
     }
 
     #[test]
@@ -982,7 +1119,7 @@ mod tests {
             store
                 .create_profile("仅认证")
                 .unwrap()
-                .contains("仅认证文件")
+                .contains(crate::tr!("store.authentication_file_only"))
         );
         let snapshot = store.load().unwrap();
         assert_eq!(snapshot.profiles[0].version_count, 1);
@@ -1029,5 +1166,90 @@ mod tests {
         assert!(store.backup("工作").is_err());
         drop(lock);
         assert!(store.backup("工作").is_ok());
+    }
+
+    #[test]
+    fn first_launch_persists_detected_language_across_system_language_changes() {
+        use crate::i18n::Language::{English, SimplifiedChinese};
+        for detected in [English, SimplifiedChinese] {
+            let (_directory, store) = fixture();
+            assert_eq!(store.initialize_language_with(detected).unwrap(), detected);
+            assert_eq!(store.load().unwrap().settings.language, detected);
+            let path = store.backups().join("settings.json");
+            let saved = fs::read(&path).unwrap();
+            let opposite = if detected == English {
+                SimplifiedChinese
+            } else {
+                English
+            };
+            assert_eq!(store.initialize_language_with(opposite).unwrap(), detected);
+            assert_eq!(fs::read(path).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn adding_language_to_existing_settings_preserves_every_other_setting() {
+        use crate::i18n::Language::SimplifiedChinese;
+        let (_directory, store) = fixture();
+        fs::create_dir_all(store.backups()).unwrap();
+        let path = store.backups().join("settings.json");
+        let mut expected = json!({
+            "maxVersions": 25,
+            "chatgptAppPath": "C:/Apps/ChatGPT.exe",
+            "themeDirectory": "D:/Themes",
+            "launchAtLogin": true,
+            "exitOnClose": true,
+            "futureSetting": {"preserve": [1, 2, 3]}
+        });
+        fs::write(&path, serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
+        store.initialize_language_with(SimplifiedChinese).unwrap();
+        expected["language"] = json!("zh-CN");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(path).unwrap()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn saved_language_overrides_detection_and_unsupported_codes_use_detection() {
+        use crate::i18n::Language::{English, SimplifiedChinese};
+        let (_directory, store) = fixture();
+        fs::create_dir_all(store.backups()).unwrap();
+        let path = store.backups().join("settings.json");
+        fs::write(&path, br#"{"maxVersions":10,"language":"en"}"#).unwrap();
+        assert_eq!(
+            store.initialize_language_with(SimplifiedChinese).unwrap(),
+            English
+        );
+        fs::write(&path, br#"{"maxVersions":10,"language":"zh-CN"}"#).unwrap();
+        assert_eq!(
+            store.initialize_language_with(English).unwrap(),
+            SimplifiedChinese
+        );
+        fs::write(
+            &path,
+            br#"{"maxVersions":10,"language":"unsupported","custom":true}"#,
+        )
+        .unwrap();
+        assert_eq!(store.initialize_language_with(English).unwrap(), English);
+        let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["language"], "en");
+        assert_eq!(saved["custom"], true);
+    }
+
+    #[test]
+    fn invalid_settings_are_not_overwritten_during_language_initialization() {
+        let (_directory, store) = fixture();
+        fs::create_dir_all(store.backups()).unwrap();
+        let path = store.backups().join("settings.json");
+        for original in ["{invalid", "[]", "null"] {
+            fs::write(&path, original).unwrap();
+            assert!(
+                store
+                    .initialize_language_with(crate::i18n::Language::English)
+                    .is_err()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
     }
 }

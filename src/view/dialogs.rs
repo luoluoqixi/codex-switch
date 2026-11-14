@@ -32,12 +32,12 @@ impl Switcher {
             .profiles
             .iter()
             .find(|profile| profile.is_current)
-            .map(|profile| format!("当前配置属于“{}”，与目标备份目录不同。", profile.name))
-            .unwrap_or_else(|| "当前配置尚未归入任何配置目录。".into());
+            .map(|profile| crate::tr!("dialogs.the_current_configuration_belongs_to_which_is_not_the"; arg0 = profile.name))
+            .unwrap_or_else(|| crate::tr!("dialogs.the_current_configuration_is_not_assigned_to_a_profile").into());
         self.confirm(
-            format!("将当前配置备份到“{name}”？"),
-            format!("{current}\n继续将把当前 config.toml 和 auth.json 保存为“{name}”的新版本，并将当前配置关联到该目录。超出保留数量的旧版本会自动清理。"),
-            "保存备份",
+            crate::tr!("dialogs.back_up_the_current_configuration_to"; name = name),
+            crate::tr!("dialogs.nthis_will_save_the_current_config_toml_and_auth"; current = current, name = name),
+            crate::tr!("dialogs.save_backup"),
             ConfirmAction::Operation(Operation::Backup(name)),
             window,
             cx,
@@ -79,19 +79,20 @@ impl Switcher {
             if version.problem.is_some() || version.is_current {
                 return;
             }
-            let target = format!("“{name}”的 {} 版本", version.time);
+            let target = crate::tr!("dialogs.the_version_of"; name = name, arg0 = version.time);
             (Operation::SwitchVersion(name.clone(), id), target)
         } else {
             if !self.can_switch_profile(&name) {
                 return;
             }
-            let target = format!("“{name}”的最新备份（{}）", profile.time);
+            let target =
+                crate::tr!("dialogs.the_latest_backup_of"; name = name, arg0 = profile.time);
             (Operation::Switch(name.clone()), target)
         };
         self.confirm_with_origin(
-            format!("切换到配置“{name}”？"),
-            format!("将使用{target}替换当前 config.toml 和 auth.json。切换前会自动备份当前文件，不会自动重启 ChatGPT。"),
-            "切换配置",
+            crate::tr!("dialogs.switch_to_profile"; name = name),
+            crate::tr!("dialogs.replace_the_current_config_toml_and_auth_json_with"; target = target),
+            crate::tr!("shell.switch_profile"),
             ConfirmAction::Operation(operation),
             origin,
             cx,
@@ -121,12 +122,12 @@ impl Switcher {
         }
         let title = format!("{} {}？", action.label(), app.name());
         let detail = if cfg!(target_os = "windows") {
-            "将强制结束 ChatGPT 及其子进程，应用内尚未保存的内容可能丢失。"
+            crate::tr!("dialogs.this_will_force_stop_chatgpt_and_its_child_processes")
         } else {
-            "将退出 ChatGPT 的所有窗口。请先保存应用内尚未保存的内容。"
+            crate::tr!("dialogs.this_will_quit_all_chatgpt_windows_save_any_unsaved")
         };
         let detail = if matches!(action, AppAction::Restart) {
-            format!("{detail} 退出完成后将重新启动应用，加载已保存的配置。")
+            crate::tr!("dialogs.the_app_will_restart_afterward_to_load_the_saved"; detail = detail)
         } else {
             detail.to_string()
         };
@@ -165,20 +166,16 @@ impl Switcher {
             .map(|p| p.version_count)
             .sum();
         let title = if names.len() == 1 {
-            format!("删除备份“{}”？", names[0])
+            crate::tr!("dialogs.delete_backup"; arg0 = names[0])
         } else {
-            format!("删除选中的 {} 个备份目录？", names.len())
+            crate::tr!("dialogs.delete_the_selected_backup_directories"; arg0 = names.len())
         };
         let preview = names.iter().take(8).cloned().collect::<Vec<_>>().join("、");
-        let detail = format!(
-            "{}{}\n将永久删除这些目录及其中 {count} 个版本，无法恢复。当前使用的 config.toml 和 auth.json 会保留。",
-            preview,
-            if names.len() > 8 { "等" } else { "" }
-        );
+        let detail = crate::tr!("dialogs.nthese_directories_and_their_versions_will_be_permanently_deleted"; arg0 = preview, arg1 = if names.len() > 8 { crate::tr!("dialogs.and_others") } else { "" }, count = count);
         self.confirm(
             title,
             detail,
-            "删除备份",
+            crate::tr!("dialogs.delete_backups"),
             ConfirmAction::Operation(Operation::DeleteProfiles(names)),
             window,
             cx,
@@ -194,9 +191,9 @@ impl Switcher {
         cx: &mut Context<Self>,
     ) {
         self.confirm(
-            format!("删除“{name}”的 {time} 版本？"),
-            "删除后无法恢复，当前使用的配置文件会保留。".into(),
-            "删除版本",
+            crate::tr!("dialogs.delete_the_version_of"; name = name, time = time),
+            crate::tr!("dialogs.this_cannot_be_undone_the_current_configuration_files_will").into(),
+            crate::tr!("dialogs.delete_version"),
             ConfirmAction::Operation(Operation::DeleteVersion(name, id)),
             window,
             cx,
@@ -205,15 +202,18 @@ impl Switcher {
 
     pub(crate) fn request_exit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.prompt_open {
-            self.message = "正在处理操作或等待确认，请完成后再退出。".into();
+            self.message =
+                crate::tr!("dialogs.an_operation_or_confirmation_is_pending_finish_it_before")
+                    .into();
             cx.notify();
             return;
         }
         if self.exit_needs_confirmation(cx) {
             self.confirm(
-                "退出 Codex Switch？".into(),
-                "config.toml 编辑器有未保存的修改，退出将丢弃这些修改。".into(),
-                "丢弃修改并退出",
+                crate::tr!("dialogs.quit_codex_switch").into(),
+                crate::tr!("dialogs.the_config_toml_editor_has_unsaved_changes_quitting_will")
+                    .into(),
+                crate::tr!("dialogs.discard_and_quit"),
                 ConfirmAction::Exit,
                 window,
                 cx,
@@ -229,7 +229,7 @@ impl Switcher {
         }
         self.busy = true;
         self.app_revision += 1;
-        self.message = "正在停止后台任务并退出…".into();
+        self.message = crate::tr!("dialogs.stopping_background_tasks_and_quitting").into();
         cx.notify();
         let service = self.theme_service.clone();
         let job = cx.background_spawn(async move { service.shutdown() });
@@ -239,7 +239,7 @@ impl Switcher {
                 let _ = this.update(cx, |this, cx| {
                     this.busy = false;
                     this.refresh_themes(cx);
-                    this.show_theme_error(format!("无法停止主题后台任务：{error:#}"), cx);
+                    this.show_theme_error(crate::tr!("dialogs.could_not_stop_the_theme_worker"; error = format!("{:#}", error)), cx);
                 });
             }
         })
@@ -299,7 +299,7 @@ impl Switcher {
                     owner.update(cx, |owner, cx| {
                         owner.prompt_open = false;
                         if let Err(error) = &answer {
-                            owner.message = format!("操作未执行：{error:#}");
+                            owner.message = crate::tr!("dialogs.the_operation_was_not_performed"; error = format!("{:#}", error));
                             owner.is_error = true;
                         }
                         cx.notify();

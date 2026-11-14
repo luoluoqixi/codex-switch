@@ -64,10 +64,12 @@ fn display_name(raw: &Value) -> Option<&str> {
 
 fn read_theme(dir: &Path) -> Result<Value> {
     let path = dir.join("theme.json");
-    let source = fs::read_to_string(&path)
-        .with_context(|| format!("无法读取主题配置：{}", path.display()))?;
-    serde_json::from_str(source.trim_start_matches('\u{feff}'))
-        .with_context(|| format!("主题 JSON 无法解析：{}", path.display()))
+    let source = fs::read_to_string(&path).with_context(
+        || crate::tr!("payload.could_not_read_the_theme_configuration"; arg0 = path.display()),
+    )?;
+    serde_json::from_str(source.trim_start_matches('\u{feff}')).with_context(
+        || crate::tr!("payload.could_not_parse_the_theme_json"; arg0 = path.display()),
+    )
 }
 
 pub(super) fn default_transparency(dir: &Path) -> u8 {
@@ -110,21 +112,26 @@ pub(super) fn default_transparency(dir: &Path) -> u8 {
 pub(super) fn build(theme_dir: &Path, transparency: Option<u8>) -> Result<String> {
     let mut theme = read_theme(theme_dir)?;
     if !theme.is_object() {
-        bail!("主题配置的根节点必须是 JSON 对象：{}", theme_dir.display());
+        bail!(
+            crate::tr!("payload.the_theme_configuration_root_must_be_a_json_object"; arg0 = theme_dir.display())
+        );
     }
     let name = display_name(&theme)
         .map(str::to_owned)
         .unwrap_or_else(|| theme_name(theme_dir));
-    let image = image_reference(&theme)
-        .with_context(|| format!("主题“{name}”未指定背景图片（theme.json 的 image 字段）"))?;
+    let image = image_reference(&theme).with_context(
+        || crate::tr!("payload.theme_has_no_background_image_the_image_field_in"; name = name),
+    )?;
     let art_data = if image.starts_with("data:image/") {
         image.to_owned()
     } else {
         let path = theme_dir.join(image.replace('\\', "/"));
         let bytes = fs::read(&path)
-            .with_context(|| format!("无法读取主题“{name}”的背景图片：{}", path.display()))?;
+            .with_context(|| crate::tr!("payload.could_not_read_the_background_image_for_theme"; name = name, arg0 = path.display()))?;
         if bytes.is_empty() {
-            bail!("主题“{name}”的背景图片为空：{}", path.display());
+            bail!(
+                crate::tr!("payload.the_background_image_for_theme_is_empty"; name = name, arg0 = path.display())
+            );
         }
         if let Some(metadata) = image_metadata(&bytes) {
             theme["artMetadata"] = metadata;
@@ -164,7 +171,9 @@ pub(super) fn build(theme_dir: &Path, transparency: Option<u8>) -> Result<String
     theme.as_object_mut().unwrap().remove("userTransparency");
     if let Some(value) = transparency {
         if value > 100 {
-            bail!("主题透明度必须在 0–100 之间");
+            bail!(crate::tr!(
+                "payload.theme_transparency_must_be_between_0_and_100"
+            ));
         }
         theme["userTransparency"] = json!(value);
     }
@@ -173,7 +182,9 @@ pub(super) fn build(theme_dir: &Path, transparency: Option<u8>) -> Result<String
         Ok(source) => format!("{BASE_CSS}\n{}", compile_css(&source)?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => BASE_CSS.to_owned(),
         Err(error) => {
-            return Err(error).with_context(|| format!("无法读取主题样式：{}", css_path.display()));
+            return Err(error).with_context(
+                || crate::tr!("payload.could_not_read_theme_styles"; arg0 = css_path.display()),
+            );
         }
     };
     let generation = format!(
@@ -213,7 +224,9 @@ pub(super) fn build(theme_dir: &Path, transparency: Option<u8>) -> Result<String
             .iter()
             .find(|(token, _)| rest[start..].starts_with(token))
         else {
-            bail!("内置主题渲染器存在未知模板字段");
+            bail!(crate::tr!(
+                "payload.the_built_in_theme_renderer_contains_an_unknown_template"
+            ));
         };
         payload.push_str(value);
         rest = &rest[start + token.len()..];
@@ -224,9 +237,9 @@ pub(super) fn build(theme_dir: &Path, transparency: Option<u8>) -> Result<String
     Ok(format!(
         "(async (_codexSwitchArtData) => {{ const route = new URLSearchParams(location.search).get('initialRoute') || ''; if (location.protocol !== 'app:' || location.pathname.endsWith('/avatar-overlay-composition-surface.html') || route.startsWith('/avatar-overlay')) return {{installed: false, excluded: true}}; const generation = {}; window.__CODEX_SWITCH_THEME_GENERATION__ = generation; const picture = new Image(); picture.src = _codexSwitchArtData; try {{ await picture.decode(); }} catch (_) {{ throw new Error({}); }} if (window.__CODEX_SWITCH_THEME_GENERATION__ !== generation) return {{installed: false, cancelled: true}}; return ({payload}); }})({})",
         serde_json::to_string(&generation)?,
-        serde_json::to_string(&format!(
-            "主题“{name}”的背景图片无法解码，请检查主题中的图片文件。"
-        ))?,
+        serde_json::to_string(
+            &crate::tr!("payload.could_not_decode_the_background_image_for_theme_check"; name = name)
+        )?,
         serde_json::to_string(&art_data)?,
     ))
 }
@@ -496,7 +509,7 @@ fn compile_rules(source: &str) -> Result<String> {
             continue;
         }
         if token != b'{' {
-            bail!("主题 CSS 的花括号不匹配");
+            bail!(crate::tr!("payload.theme_css_has_unmatched_braces"));
         }
         let header = source[start..open].trim();
         let mut depth = 1;
@@ -513,7 +526,7 @@ fn compile_rules(source: &str) -> Result<String> {
             close_index += 1;
         }
         if depth != 0 {
-            bail!("主题 CSS 的花括号不匹配：{header}");
+            bail!(crate::tr!("payload.theme_css_has_unmatched_braces_2"; header = header));
         }
         let close = structural[close_index].0;
         let body = &source[open + 1..close];
@@ -757,7 +770,7 @@ mod tests {
             build(dir.path(), None)
                 .unwrap_err()
                 .to_string()
-                .contains("背景图片")
+                .contains(&crate::tr!("payload.could_not_read_the_background_image_for_theme"; name = "旧主题", arg0 = dir.path().join("missing.jpg").display()))
         );
     }
 

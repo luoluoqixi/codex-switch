@@ -45,9 +45,9 @@ pub(crate) enum AppAction {
 impl AppAction {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Open => "打开",
-            Self::Close => "关闭",
-            Self::Restart => "重新打开",
+            Self::Open => crate::tr!("desktop.open"),
+            Self::Close => crate::tr!("desktop.close"),
+            Self::Restart => crate::tr!("desktop.reopen"),
         }
     }
 }
@@ -92,15 +92,17 @@ pub(crate) fn installation_path(app: DesktopApp, paths: &[String; 1]) -> Result<
     let status = inspect(paths)?
         .into_iter()
         .find(|status| status.app == app)
-        .context("无法读取应用状态")?;
+        .context(crate::tr!("desktop.could_not_read_the_app_status"))?;
     if let Some(problem) = status.problem() {
         bail!("{problem}");
     }
-    let path = status
-        .path
-        .as_deref()
-        .context("无法确定应用位置，请在设置中指定 ChatGPT 应用路径")?;
-    anyhow::ensure!(path.exists(), "应用路径已不存在，请刷新或检查设置");
+    let path = status.path.as_deref().context(crate::tr!(
+        "desktop.could_not_locate_the_app_set_the_chatgpt_app"
+    ))?;
+    anyhow::ensure!(
+        path.exists(),
+        crate::tr!("desktop.the_app_path_no_longer_exists_refresh_or_check")
+    );
     // Reveal the application itself: the .exe on Windows or the .app bundle on macOS.
     Ok(path.to_path_buf())
 }
@@ -111,21 +113,22 @@ pub(crate) fn validate_paths(paths: &[String]) -> Result<()> {
             continue;
         }
         let path = Path::new(value);
-        anyhow::ensure!(path.is_absolute(), "{} 应用路径须为绝对路径", app.name());
+        anyhow::ensure!(
+            path.is_absolute(),
+            crate::tr!("desktop.the_app_path_must_be_absolute"; arg0 = app.name())
+        );
         #[cfg(target_os = "windows")]
         anyhow::ensure!(
             path.is_file()
                 && path.file_name().is_some_and(|name| name
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&format!("{}.exe", app.name()))),
-            "请选择 {}.exe 的完整路径",
-            app.name()
+            crate::tr!("desktop.select_the_full_path_to_exe"; arg0 = app.name())
         );
         #[cfg(target_os = "macos")]
         anyhow::ensure!(
             path.is_dir() && path.extension().is_some_and(|ext| ext == "app"),
-            "请选择 {}.app 应用目录",
-            app.name()
+            crate::tr!("desktop.select_the_app_directory"; arg0 = app.name())
         );
     }
     Ok(())
@@ -148,7 +151,9 @@ pub(crate) fn inspect(paths: &[String; 1]) -> Result<Vec<AppStatus>> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = paths;
-        bail!("应用启动控制目前支持 Windows 和 macOS")
+        bail!(crate::tr!(
+            "desktop.app_launch_controls_are_supported_on_windows_and_macos"
+        ))
     }
 }
 
@@ -158,46 +163,52 @@ pub(crate) fn perform(app: DesktopApp, action: AppAction, paths: &[String; 1]) -
         let before = inspect(paths)?
             .into_iter()
             .find(|status| status.app == app)
-            .context("无法读取应用状态")?;
+            .context(crate::tr!("desktop.could_not_read_the_app_status"))?;
         if let Some(problem) = &before.problem {
             bail!("{problem}");
         }
         if matches!(action, AppAction::Open) && before.is_running() {
             anyhow::ensure!(
                 crate::themes::has_debug_endpoint(),
-                "Codex 已在运行，但没有可用的主题调试通道。请点击“重新打开”一次，之后可直接切换主题。"
+                crate::tr!("desktop.codex_is_running_without_a_theme_debugging_connection_click")
             );
-            return Ok(format!("{} 已在运行，主题调试通道可用。", app.name()));
+            return Ok(
+                crate::tr!("desktop.is_running_with_a_theme_debugging_connection"; arg0 = app.name()),
+            );
         }
         if !matches!(action, AppAction::Close) {
             anyhow::ensure!(
                 before.is_installed(),
-                "未找到 {}，请在设置中填写应用路径。",
-                app.name()
+                crate::tr!("desktop.was_not_found_set_its_app_path_in_settings"; arg0 = app.name())
             );
         }
         if !matches!(action, AppAction::Open) && before.is_running() {
             platform::close(&before, paths)?;
             wait_for(app, paths, false).with_context(|| {
                 if cfg!(target_os = "windows") {
-                    "应用进程尚未全部退出，请检查系统权限或是否有其他程序自动重新启动该应用"
+                    crate::tr!(
+                        "desktop.some_app_processes_are_still_running_check_system_permissions"
+                    )
                 } else {
-                    "应用尚未退出，请处理应用内的提示或手动退出后重试"
+                    crate::tr!("desktop.the_app_has_not_quit_yet_handle_its_prompts")
                 }
             })?;
         }
         if !matches!(action, AppAction::Close) {
             platform::launch(&before)?;
-            wait_for(app, paths, true)
-                .context("已发送打开请求，但尚未检测到应用运行；请检查应用或在设置中指定路径")?;
+            wait_for(app, paths, true).context(crate::tr!(
+                "desktop.the_open_request_was_sent_but_the_app_is"
+            ))?;
             crate::themes::verify_launch_endpoint()?;
         }
-        Ok(format!("已{} {}。", action.label(), app.name()))
+        Ok(crate::tr!("desktop.completed"; arg0 = action.label(), arg1 = app.name()))
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = (app, action, paths);
-        bail!("应用启动控制目前支持 Windows 和 macOS")
+        bail!(crate::tr!(
+            "desktop.app_launch_controls_are_supported_on_windows_and_macos"
+        ))
     }
 }
 
@@ -208,7 +219,7 @@ fn wait_for(app: DesktopApp, paths: &[String; 1], running: bool) -> Result<()> {
         let status = statuses
             .iter()
             .find(|s| s.app == app)
-            .context("无法读取应用状态")?;
+            .context(crate::tr!("desktop.could_not_read_the_app_status"))?;
         if let Some(problem) = &status.problem {
             bail!("{problem}");
         }
@@ -216,7 +227,9 @@ fn wait_for(app: DesktopApp, paths: &[String; 1], running: bool) -> Result<()> {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            bail!("等待 {} 状态更新超时", app.name());
+            bail!(
+                crate::tr!("desktop.timed_out_waiting_for_the_status_to_update"; arg0 = app.name())
+            );
         }
         thread::sleep(Duration::from_millis(400));
     }
@@ -233,31 +246,41 @@ fn output(mut command: Command) -> Result<Vec<u8>> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW: hide helper consoles.
     }
-    let mut child = command.spawn().context("无法启动系统应用管理工具")?;
+    let mut child = command.spawn().context(crate::tr!(
+        "desktop.could_not_start_the_system_app_management_tool"
+    ))?;
     // Drain stdout concurrently so a full pipe cannot deadlock discovery.
-    let mut pipe = child.stdout.take().context("无法读取系统工具输出")?;
+    let mut pipe = child
+        .stdout
+        .take()
+        .context(crate::tr!("desktop.could_not_read_the_system_tool_output"))?;
     let reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut pipe, &mut bytes).map(|_| bytes)
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
-        if let Some(status) = child.try_wait().context("无法读取系统工具状态")? {
+        if let Some(status) = child
+            .try_wait()
+            .context(crate::tr!("desktop.could_not_read_the_system_tool_status"))?
+        {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("系统应用管理工具超时，请稍后重试");
+            bail!(crate::tr!(
+                "desktop.the_system_app_management_tool_timed_out_try_again"
+            ));
         }
         thread::sleep(Duration::from_millis(40));
     };
-    let bytes = reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("无法读取系统工具输出"))??;
+    let bytes = reader.join().map_err(|_| {
+        anyhow::anyhow!(crate::tr!("desktop.could_not_read_the_system_tool_output"))
+    })??;
     anyhow::ensure!(
         status.success(),
-        "系统应用操作失败（{status}），请检查应用安装位置和系统权限"
+        crate::tr!("desktop.the_system_app_operation_failed_check_the_installation_path"; status = status)
     );
     Ok(bytes)
 }

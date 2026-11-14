@@ -17,10 +17,10 @@ pub(crate) fn confirm(
         let hwnd = origin.map_or(Ok(0), |origin| {
             cx.update_window(origin, |_, window, _| -> Result<usize> {
                 let handle = HasWindowHandle::window_handle(window)
-                    .map_err(|error| anyhow::anyhow!("无法获取原生窗口句柄：{error}"))?;
+                    .map_err(|error| anyhow::anyhow!(crate::tr!("native_prompt.could_not_get_the_native_window_handle"; error = error)))?;
                 match handle.as_raw() {
                     RawWindowHandle::Win32(handle) => Ok(handle.hwnd.get() as usize),
-                    _ => anyhow::bail!("无法获取 Windows 确认框的所属窗口"),
+                    _ => anyhow::bail!(crate::tr!("native_prompt.could_not_find_the_owner_window_for_the_windows")),
                 }
             })
             .and_then(|result| result)
@@ -35,7 +35,11 @@ pub(crate) fn confirm(
             #[cfg(target_os = "macos")]
             return cx.background_spawn(async move { macos::confirm(&title, &detail, &label) });
             #[cfg(not(target_os = "macos"))]
-            return cx.spawn(async |_| anyhow::bail!("当前平台不支持独立的系统确认框"));
+            return cx.spawn(async |_| {
+                anyhow::bail!(crate::tr!(
+                    "native_prompt.standalone_system_confirmation_dialogs_are_not_supported_on_this"
+                ))
+            });
         };
         // macOS shows a native sheet attached to the initiating window.
         let receiver = cx.update_window(origin, |_, window, cx| {
@@ -44,11 +48,18 @@ pub(crate) fn confirm(
                 PromptLevel::Warning,
                 &title,
                 Some(&detail),
-                &[PromptButton::cancel("取消"), PromptButton::new(label)],
+                &[
+                    PromptButton::cancel(crate::tr!("native_prompt.cancel")),
+                    PromptButton::new(label),
+                ],
                 cx,
             )
         });
-        cx.spawn(async move |_| Ok(receiver?.await.context("系统确认框未返回结果")? == 1))
+        cx.spawn(async move |_| {
+            Ok(receiver?.await.context(crate::tr!(
+                "native_prompt.the_system_confirmation_dialog_returned_no_result"
+            ))? == 1)
+        })
     }
 }
 
@@ -71,7 +82,7 @@ fn show_windows(parent: usize, title: &str, detail: &str, label: &str) -> Result
     let title = HSTRING::from(title);
     let detail = HSTRING::from(detail);
     let label = HSTRING::from(label);
-    let cancel = HSTRING::from("取消");
+    let cancel = HSTRING::from(crate::tr!("native_prompt.cancel"));
     let caption = HSTRING::from(crate::APP_NAME);
     const CONFIRM_ID: i32 = 1000;
     // Explicit IDs keep Escape/X mapped to cancellation after swapping buttons.
@@ -104,8 +115,9 @@ fn show_windows(parent: usize, title: &str, detail: &str, label: &str) -> Result
     config.Anonymous1.pszMainIcon = TD_WARNING_ICON;
     let mut clicked = IDCANCEL.0;
     // Common Controls 6 comes from GPUI's embedded manifest.
-    unsafe { TaskDialogIndirect(&config, Some(&mut clicked), None, None) }
-        .context("无法打开 Windows 系统确认框")?;
+    unsafe { TaskDialogIndirect(&config, Some(&mut clicked), None, None) }.context(crate::tr!(
+        "native_prompt.could_not_open_the_windows_confirmation_dialog"
+    ))?;
     Ok(clicked == CONFIRM_ID)
 }
 
@@ -144,11 +156,16 @@ mod macos {
     impl NativeString {
         fn new(value: &str) -> Result<Self> {
             const UTF8: u32 = 0x0800_0100;
-            let length = isize::try_from(value.len()).context("系统确认框文字过长")?;
+            let length = isize::try_from(value.len()).context(crate::tr!(
+                "native_prompt.the_confirmation_dialog_text_is_too_long"
+            ))?;
             let string = unsafe {
                 CFStringCreateWithBytes(std::ptr::null(), value.as_ptr(), length, UTF8, 0)
             };
-            ensure!(!string.is_null(), "无法创建系统确认框文字");
+            ensure!(
+                !string.is_null(),
+                crate::tr!("native_prompt.could_not_create_the_confirmation_dialog_text")
+            );
             Ok(Self(string))
         }
     }
@@ -162,7 +179,7 @@ mod macos {
     pub(super) fn confirm(title: &str, detail: &str, label: &str) -> Result<bool> {
         let title = NativeString::new(title)?;
         let detail = NativeString::new(detail)?;
-        let cancel = NativeString::new("取消")?;
+        let cancel = NativeString::new(crate::tr!("native_prompt.cancel"))?;
         let action = NativeString::new(label)?;
         const CAUTION_ALERT: usize = 2;
         const ALTERNATE_RESPONSE: usize = 1;
@@ -184,7 +201,10 @@ mod macos {
                 &mut response,
             )
         };
-        ensure!(status == 0, "无法打开 macOS 系统确认框：{status}");
+        ensure!(
+            status == 0,
+            crate::tr!("native_prompt.could_not_open_the_macos_confirmation_dialog"; status = status)
+        );
         Ok(response & 0x3 == ALTERNATE_RESPONSE)
     }
 }

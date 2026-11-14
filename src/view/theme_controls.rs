@@ -16,7 +16,7 @@ impl ThemeChoice {
     pub(super) fn off() -> Self {
         Self {
             id: String::new(),
-            name: "关闭主题".into(),
+            name: crate::tr!("shell.theme_off").into(),
         }
     }
 }
@@ -44,19 +44,16 @@ impl Render for TransparencyControl {
             .flex_col()
             .gap_3()
             .py_2()
-            .child(format!(
-                "背景透明度：{}%",
-                self.slider.read(cx).value().start().round() as u8
-            ))
-            .child(Slider::new(&self.slider).accessibility_label("背景透明度，0 到 100"))
+            .child(crate::tr!("theme_controls.background_transparency"; arg0 = self.slider.read(cx).value().start().round() as u8))
+            .child(Slider::new(&self.slider).accessibility_label(crate::tr!("theme_controls.background_transparency_0_to_100")))
             .child(
                 div()
                     .flex()
                     .justify_between()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("0% · 不透明")
-                    .child("100% · 透明"),
+                    .child(crate::tr!("theme_controls.0_opaque"))
+                    .child(crate::tr!("theme_controls.100_transparent")),
             )
     }
 }
@@ -146,7 +143,7 @@ impl Switcher {
                         });
                         cx.notify();
                     }
-                    Err(error) => this.show_theme_error(format!("无法读取主题目录：{error:#}"), cx),
+                    Err(error) => this.show_theme_error(crate::tr!("theme_controls.could_not_read_the_theme_directory"; error = format!("{:#}", error)), cx),
                 }
             });
         })
@@ -181,9 +178,14 @@ impl Switcher {
                     window.open_alert_dialog(cx, move |alert, _, _| {
                         let owner = owner.clone();
                         alert
-                            .title("无法完成主题操作")
+                            .title(crate::tr!(
+                                "theme_controls.could_not_complete_the_theme_operation"
+                            ))
                             .description(message.clone())
-                            .button_props(DialogButtonProps::default().ok_text("知道了"))
+                            .button_props(
+                                DialogButtonProps::default()
+                                    .ok_text(crate::tr!("theme_controls.ok")),
+                            )
                             .on_close(move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     this.prompt_open = false;
@@ -217,7 +219,7 @@ impl Switcher {
                 files: true,
                 directories: false,
                 multiple: true,
-                prompt: Some("选择zip或图片".into()),
+                prompt: Some(crate::tr!("theme_controls.choose_zips_or_images").into()),
             });
             cx.spawn(async move |cx| {
                 let result = receiver.await;
@@ -237,9 +239,9 @@ impl Switcher {
                                 }
                                 Ok(Ok(None)) => {}
                                 Ok(Err(error)) => this
-                                    .show_theme_error(format!("无法选择主题文件：{error:#}"), cx),
+                                    .show_theme_error(crate::tr!("theme_controls.could_not_select_theme_files"; error = format!("{:#}", error)), cx),
                                 Err(_) => this
-                                    .show_theme_error("文件选择器未返回结果，请重试。".into(), cx),
+                                    .show_theme_error(crate::tr!("theme_controls.the_file_picker_returned_no_result_try_again").into(), cx),
                             }
                             cx.notify();
                         });
@@ -282,13 +284,13 @@ impl Switcher {
                         let slider_value = slider.clone();
                         let busy = owner.upgrade().is_none_or(|owner| owner.read(cx).busy);
                         alert
-                            .title("当前主题效果")
-                            .description("调整界面背景的透明度；数值越大，背景图片越明显。")
+                            .title(crate::tr!("theme_controls.theme_effects"))
+                            .description(crate::tr!("theme_controls.adjust_the_interface_background_transparency_higher_values_make_the"))
                             .confirm()
                             .button_props(
                                 DialogButtonProps::default()
-                                    .ok_text(if busy { "应用中…" } else { "应用" })
-                                    .cancel_text("关闭"),
+                                    .ok_text(if busy { crate::tr!("theme_controls.applying") } else { crate::tr!("theme_controls.apply") })
+                                    .cancel_text(crate::tr!("desktop.close")),
                             )
                             .child(control.clone())
                             .on_ok(move |_, window, cx| {
@@ -334,16 +336,16 @@ impl Switcher {
                     .min_w_24()
                     .flex_shrink(1.)
                     .small()
-                    .accessibility_label("当前主题")
+                    .accessibility_label(crate::tr!("theme_controls.current_theme"))
                     .disabled(disabled),
             )
             .child(
                 Button::new("import-theme")
                     .outline()
                     .small()
-                    .label("导入…")
-                    .accessibility_label("导入主题 ZIP 或背景图片，可多选")
-                    .tooltip("导入主题 ZIP 或背景图片（可多选）")
+                    .label(crate::tr!("theme_controls.import"))
+                    .accessibility_label(crate::tr!("theme_controls.import_theme_zips_or_background_images_multiple_selection_supported"))
+                    .tooltip(crate::tr!("theme_controls.import_theme_zips_or_background_images_multiple_files"))
                     .disabled(disabled)
                     .on_click(cx.listener(|this, _, window, cx| this.import_theme(window, cx))),
             )
@@ -351,8 +353,8 @@ impl Switcher {
                 Button::new("theme-effects")
                     .outline()
                     .small()
-                    .label("效果…")
-                    .accessibility_label("当前主题效果")
+                    .label(crate::tr!("theme_controls.effects"))
+                    .accessibility_label(crate::tr!("theme_controls.theme_effects"))
                     .disabled(disabled || self.themes.selected.is_none())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.show_theme_effects(window, cx)),
@@ -363,8 +365,8 @@ impl Switcher {
                     .outline()
                     .small()
                     .icon(IconName::ExternalLink)
-                    .accessibility_label("打开 DreamSkin 主题库")
-                    .tooltip("浏览 DreamSkin 主题库")
+                    .accessibility_label(crate::tr!("theme_controls.open_the_dreamskin_theme_gallery"))
+                    .tooltip(crate::tr!("theme_controls.browse_the_dreamskin_theme_gallery"))
                     .disabled(disabled)
                     .on_click(|_, _, cx| cx.open_url("https://dreamskin.cc/gallery")),
             )
@@ -373,8 +375,8 @@ impl Switcher {
                     .outline()
                     .small()
                     .icon(IconName::FolderOpen)
-                    .accessibility_label("打开主题文件夹")
-                    .tooltip("打开主题文件夹")
+                    .accessibility_label(crate::tr!("theme_controls.open_theme_folder"))
+                    .tooltip(crate::tr!("theme_controls.open_theme_folder"))
                     .disabled(disabled)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.run(Operation::OpenThemes, window, cx)

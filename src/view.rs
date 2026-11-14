@@ -99,9 +99,9 @@ enum ProfileOrder {
 impl ProfileOrder {
     fn label(self) -> &'static str {
         match self {
-            Self::Newest => "最新备份优先",
-            Self::Oldest => "最早备份优先",
-            Self::Name => "名称 A–Z",
+            Self::Newest => crate::tr!("view.newest_backup_first"),
+            Self::Oldest => crate::tr!("view.oldest_backup_first"),
+            Self::Name => crate::tr!("view.name_a_z"),
         }
     }
 
@@ -252,7 +252,7 @@ impl Switcher {
             editor_window: None,
             list_focus,
             scroll: UniformListScrollHandle::new(),
-            message: "正在读取配置…".into(),
+            message: crate::tr!("view.loading_configuration").into(),
             is_error: false,
         };
         this._app_monitor = Some(cx.spawn(async move |this, cx| {
@@ -317,24 +317,32 @@ impl Switcher {
             Operation::SaveConfig(_, _) | Operation::Create(_)
         );
         self.message = match &operation {
-            Operation::Refresh => "正在读取配置…".into(),
-            Operation::Backup(name) => format!("正在保存到 {name}…"),
-            Operation::Create(_) => "正在新建备份…".into(),
-            Operation::Switch(_) => "正在备份并切换配置…".into(),
-            Operation::Open(_) => "正在打开目录…".into(),
-            Operation::OpenVersion(_, _) => "正在打开版本目录…".into(),
-            Operation::Settings(_) => "正在保存设置并清理旧版本…".into(),
-            Operation::SwitchVersion(_, _) => "正在备份并切换到所选版本…".into(),
-            Operation::DeleteVersion(_, _) => "正在删除备份版本…".into(),
-            Operation::DeleteProfiles(_) => "正在删除备份目录…".into(),
-            Operation::Desktop(app, action) => format!("正在{} {}…", action.label(), app.name()),
-            Operation::OpenInstallation(_) => "正在定位 ChatGPT 应用…".into(),
-            Operation::ReadConfig => "正在读取 config.toml…".into(),
-            Operation::SaveConfig(_, _) => "正在保存 config.toml…".into(),
-            Operation::SelectTheme(_) => "正在切换主题…".into(),
-            Operation::ImportThemes(_) => "正在导入主题…".into(),
-            Operation::ThemeTransparency(_) => "正在调整主题透明度…".into(),
-            Operation::OpenThemes => "正在打开主题目录…".into(),
+            Operation::Refresh => crate::tr!("view.loading_configuration").into(),
+            Operation::Backup(name) => crate::tr!("view.saving_to"; name = name),
+            Operation::Create(_) => crate::tr!("view.creating_backup").into(),
+            Operation::Switch(_) => crate::tr!("view.backing_up_and_switching_profile").into(),
+            Operation::Open(_) => crate::tr!("view.opening_directory").into(),
+            Operation::OpenVersion(_, _) => crate::tr!("view.opening_version_directory").into(),
+            Operation::Settings(_) => {
+                crate::tr!("view.saving_settings_and_removing_old_versions").into()
+            }
+            Operation::SwitchVersion(_, _) => {
+                crate::tr!("view.backing_up_and_switching_to_the_selected_version").into()
+            }
+            Operation::DeleteVersion(_, _) => crate::tr!("view.deleting_backup_version").into(),
+            Operation::DeleteProfiles(_) => crate::tr!("view.deleting_backup_directory").into(),
+            Operation::Desktop(app, action) => {
+                crate::tr!("view."; arg0 = action.label(), arg1 = app.name())
+            }
+            Operation::OpenInstallation(_) => crate::tr!("view.locating_chatgpt").into(),
+            Operation::ReadConfig => crate::tr!("view.reading_config_toml").into(),
+            Operation::SaveConfig(_, _) => crate::tr!("view.saving_config_toml").into(),
+            Operation::SelectTheme(_) => crate::tr!("view.switching_theme").into(),
+            Operation::ImportThemes(_) => crate::tr!("view.importing_themes").into(),
+            Operation::ThemeTransparency(_) => {
+                crate::tr!("view.adjusting_theme_transparency").into()
+            }
+            Operation::OpenThemes => crate::tr!("view.opening_theme_directory").into(),
         };
         let store = self.store.clone();
         let app_paths = self.snapshot.settings.app_paths();
@@ -463,6 +471,10 @@ impl Switcher {
         cx.spawn(async move |this, cx| {
             let (result, snapshot) = job.await;
             let _ = this.update(cx, |this, cx| {
+                if this.snapshot.settings.language != crate::i18n::language() {
+                    this.theme_select_synced = false;
+                    this.app_error.clear();
+                }
                 this.busy = false;
                 let success = result.is_ok();
                 match result {
@@ -509,7 +521,7 @@ impl Switcher {
                     }
                     Err(error) => {
                         this.is_error = true;
-                        this.message.push_str(&format!(" 无法刷新列表：{error:#}"));
+                        this.message.push_str(&crate::tr!("view.could_not_refresh_the_list"; error = format!("{:#}", error)));
                         this.loaded = false;
                     }
                 }
@@ -559,7 +571,7 @@ impl Switcher {
             .small()
             .label(order.label())
             .icon(IconName::ChevronDown)
-            .accessibility_label("配置列表排序方式")
+            .accessibility_label(crate::tr!("view.profile_sort_order"))
             .disabled(!self.loaded || self.operation_pending())
             .dropdown_menu(move |mut menu, _, _| {
                 for choice in [
@@ -668,12 +680,15 @@ impl Switcher {
         let view = cx.entity().downgrade();
         let status = if profile.is_current {
             if profile.is_dirty {
-                "使用中 · 与最新不同"
+                crate::tr!("view.in_use_differs_from_latest")
             } else {
-                "使用中"
+                crate::tr!("history_window.in_use")
             }
         } else {
-            profile.problem.as_deref().unwrap_or("可切换")
+            profile
+                .problem
+                .as_deref()
+                .unwrap_or(crate::tr!("view.ready_to_switch"))
         };
         let status_color = if profile.is_current {
             cx.theme().success
@@ -694,7 +709,7 @@ impl Switcher {
             .children(self.multi_select.then(|| {
                 Checkbox::new(SharedString::from(format!("check-profile:{checkbox_key}")))
                     .checked(self.checked_profiles.contains(&checkbox_key))
-                    .accessibility_label(format!("选择备份目录 {}", profile.name))
+                    .accessibility_label(crate::tr!("view.select_backup_directory"; arg0 = profile.name))
                     .disabled(self.operation_pending())
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.toggle_checked(&checkbox_key, cx)),
@@ -713,10 +728,7 @@ impl Switcher {
                     .min_w_0()
                     .h_12()
                     .disabled(self.operation_pending())
-                    .accessibility_label(format!(
-                        "选择 {}，{} 个版本，{}",
-                        profile.name, profile.version_count, status
-                    ))
+                    .accessibility_label(crate::tr!("view.select_versions"; arg0 = profile.name, arg1 = profile.version_count, arg2 = status))
                     .child(
                         div()
                             .flex()
@@ -749,10 +761,7 @@ impl Switcher {
                                                     .text_xs()
                                                     .text_color(cx.theme().muted_foreground)
                                                     .flex_shrink_0()
-                                                    .child(format!(
-                                                        "{} 个版本",
-                                                        profile.version_count
-                                                    )),
+                                                    .child(crate::tr!("view.versions"; arg0 = profile.version_count)),
                                             ),
                                     )
                                     .child(
@@ -789,9 +798,9 @@ impl Switcher {
                             ),
                     )
                     .tooltip(if self.multi_select {
-                        "勾选或取消选择此备份目录"
+                        crate::tr!("view.select_or_deselect_this_backup_directory")
                     } else {
-                        "单击选择，双击切换到最新备份"
+                        crate::tr!("view.click_to_select_double_click_to_switch_to_the")
                     })
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if this.busy || this.prompt_open {
@@ -813,8 +822,8 @@ impl Switcher {
                 Button::new(SharedString::from(format!("folder:{folder_key}")))
                     .ghost()
                     .icon(IconName::FolderOpen)
-                    .accessibility_label(format!("打开 {} 的备份目录", profile.name))
-                    .tooltip(format!("打开 {} 的备份目录", profile.name))
+                    .accessibility_label(crate::tr!("view.open_the_backup_directory_for"; arg0 = profile.name))
+                    .tooltip(crate::tr!("view.open_the_backup_directory_for"; arg0 = profile.name))
                     .disabled(self.operation_pending())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run(Operation::Open(folder_key.clone()), window, cx)
@@ -838,7 +847,7 @@ impl Switcher {
                 let folder = context_key.clone();
                 let delete = context_key.clone();
                 menu.item(
-                    PopupMenuItem::new(" 保存备份")
+                    PopupMenuItem::new(crate::tr!("view.save_backup"))
                         .icon(IconName::Save)
                         .disabled(backup_disabled)
                         .on_click(move |_, window, cx| {
@@ -848,7 +857,7 @@ impl Switcher {
                         }),
                 )
                 .item(
-                    PopupMenuItem::new(" 切换配置")
+                    PopupMenuItem::new(crate::tr!("view.switch_profile"))
                         .icon(IconName::ArrowLeftRight)
                         .disabled(switch_disabled)
                         .on_click(move |_, window, cx| {
@@ -857,7 +866,7 @@ impl Switcher {
                         }),
                 )
                 .item(
-                    PopupMenuItem::new(" 历史版本")
+                    PopupMenuItem::new(crate::tr!("view.version_history"))
                         .icon(IconName::FolderClock)
                         .disabled(unavailable)
                         .on_click(move |_, _, cx| {
@@ -874,7 +883,7 @@ impl Switcher {
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new(" 打开目录")
+                    PopupMenuItem::new(crate::tr!("view.open_directory"))
                         .icon(IconName::FolderOpen)
                         .disabled(unavailable)
                         .on_click(move |_, window, cx| {
@@ -885,7 +894,7 @@ impl Switcher {
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new(" 删除备份")
+                    PopupMenuItem::new(crate::tr!("view.delete_backups"))
                         .icon(IconName::Trash)
                         .disabled(unavailable)
                         .on_click(move |_, window, cx| {
@@ -912,19 +921,19 @@ impl Render for Switcher {
             || selected.is_none_or(|p| p.problem.is_some() || (p.is_current && !p.is_dirty));
         let backup_disabled = !self.can_backup() || selected.is_none();
         let target = if self.multi_select {
-            format!("已选择 {} 个配置目录", self.checked_profiles.len())
+            crate::tr!("view.profile_directories_selected"; arg0 = self.checked_profiles.len())
         } else {
             selected
-                .map(|p| format!("保存到：{}", p.name))
-                .unwrap_or_else(|| "先选择目录，或新建备份".into())
+                .map(|p| crate::tr!("view.save_to"; arg0 = p.name))
+                .unwrap_or_else(|| crate::tr!("view.select_a_directory_or_create_a_backup").into())
         };
         let problem = selected.and_then(|p| p.problem.clone());
         let current = if !self.loaded {
-            "尚未读取配置".into()
+            crate::tr!("view.configuration_not_loaded").into()
         } else if !self.snapshot.has_config {
-            "尚无 config.toml".into()
+            crate::tr!("view.no_config_toml_yet").into()
         } else {
-            format!("当前：{}", self.snapshot.current_name)
+            crate::tr!("view.current"; arg0 = self.snapshot.current_name)
         };
         let current_detail = if self.snapshot.has_config {
             format!(
@@ -934,11 +943,11 @@ impl Render for Switcher {
                 if self.snapshot.has_auth {
                     ""
                 } else {
-                    " · 缺少 auth.json"
+                    crate::tr!("view.missing_auth_json")
                 }
             )
         } else {
-            "先通过 Codex 生成配置，再新建备份。".into()
+            crate::tr!("view.create_a_configuration_in_codex_then_create_a_backup").into()
         };
         let count = self.snapshot.profiles.len();
         let entity = cx.entity();
@@ -993,7 +1002,7 @@ impl Render for Switcher {
                                 Button::new("edit-current-config")
                                     .outline()
                                     .icon(IconName::FilePen)
-                                    .tooltip("编辑当前 config.toml")
+                                    .tooltip(crate::tr!("view.edit_the_current_config_toml"))
                                     .flex_shrink_0()
                                     .disabled(
                                         self.operation_pending()
@@ -1011,8 +1020,8 @@ impl Render for Switcher {
                                     .outline()
                                     .icon(IconName::FolderOpen)
                                     .flex_shrink_0()
-                                    .accessibility_label("打开 config.toml 所在目录")
-                                    .tooltip("打开 config.toml 所在目录")
+                                    .accessibility_label(crate::tr!("view.open_the_directory_containing_config_toml"))
+                                    .tooltip(crate::tr!("view.open_the_directory_containing_config_toml"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let path = this.store.root().join("config.toml");
                                         cx.reveal_path(&path)
@@ -1035,16 +1044,16 @@ impl Render for Switcher {
                         div()
                             .font_semibold()
                             .flex_1()
-                            .child(format!("配置目录 · {count}")),
+                            .child(crate::tr!("view.profiles"; count = count)),
                     )
                     .child(
                         Button::new("multi-select")
                             .outline()
                             .small()
                             .label(if self.multi_select {
-                                "完成"
+                                crate::tr!("view.done")
                             } else {
-                                "多选"
+                                crate::tr!("view.select")
                             })
                             .selected(self.multi_select)
                             .disabled(
@@ -1060,7 +1069,7 @@ impl Render for Switcher {
                         Button::new("select-all-profiles")
                             .ghost()
                             .small()
-                            .label("全选")
+                            .label(crate::tr!("view.select_all"))
                             .disabled(
                                 self.operation_pending()
                                     || count == 0
@@ -1080,7 +1089,7 @@ impl Render for Switcher {
                         Button::new("deselect-all-profiles")
                             .ghost()
                             .small()
-                            .label("取消全选")
+                            .label(crate::tr!("view.deselect_all"))
                             .disabled(self.operation_pending() || self.checked_profiles.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.checked_profiles.clear();
@@ -1092,7 +1101,7 @@ impl Render for Switcher {
                         Button::new("new-backup")
                             .outline()
                             .small()
-                            .tooltip("新建备份…")
+                            .tooltip(crate::tr!("view.new_backup"))
                             .icon(IconName::Plus)
                             .disabled(!self.can_backup())
                             .on_click(cx.listener(|this, _, _, cx| this.show_new_window(cx))),
@@ -1126,15 +1135,15 @@ impl Render for Switcher {
                             .gap_2()
                             .p_4()
                             .child(div().font_semibold().child(if self.busy {
-                                "正在读取配置…"
+                                crate::tr!("view.loading_configuration")
                             } else {
-                                "还没有配置目录"
+                                crate::tr!("view.no_profile_directories_yet")
                             }))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(muted)
-                                    .child("点击“新建备份…”命名并保存当前配置。"),
+                                    .child(crate::tr!("view.choose_new_backup_to_name_and_save_the_current")),
                             )
                             .into_any_element()
                     } else {
@@ -1189,13 +1198,13 @@ impl Render for Switcher {
                                 Button::new("backup")
                                     .outline()
                                     .icon(IconName::Save)
-                                    .label("备份")
-                                    .tooltip("保存当前备份到选中的配置目录")
+                                    .label(crate::tr!("settings_window.back_up"))
+                                    .tooltip(crate::tr!("view.save_the_current_configuration_to_the_selected_profile_directory"))
                                     .disabled(backup_disabled)
                                     .tooltip(if cfg!(target_os = "macos") {
-                                        "将当前文件保存到选中的配置目录（⌘B）"
+                                        crate::tr!("view.save_the_current_files_to_the_selected_profile_directory")
                                     } else {
-                                        "将当前文件保存到选中的配置目录（Ctrl+B）"
+                                        crate::tr!("view.save_the_current_files_to_the_selected_profile_directory_2")
                                     })
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.backup(window, cx)),
@@ -1205,8 +1214,8 @@ impl Render for Switcher {
                                 Button::new("switch")
                                     .primary()
                                     .icon(IconName::ArrowLeftRight)
-                                    .label("切换")
-                                    .tooltip("切换到最新版本，并自动备份当前文件")
+                                    .label(crate::tr!("view.switch"))
+                                    .tooltip(crate::tr!("view.switch_to_the_latest_version_and_automatically_back_up"))
                                     .disabled(switch_disabled)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.switch_selected(window, cx)
@@ -1216,8 +1225,8 @@ impl Render for Switcher {
                                 Button::new("versions")
                                     .outline()
                                     .icon(IconName::FolderClock)
-                                    .label("历史")
-                                    .tooltip("打开历史版本列表")
+                                    .label(crate::tr!("view.history"))
+                                    .tooltip(crate::tr!("view.open_version_history"))
                                     .disabled(
                                         self.operation_pending()
                                             || !self.loaded
@@ -1240,11 +1249,11 @@ impl Render for Switcher {
                                     .small()
                                     .icon(IconName::Trash)
                                     .label(if self.multi_select {
-                                        format!("删除 ({})", self.checked_profiles.len())
+                                        crate::tr!("view.delete"; arg0 = self.checked_profiles.len())
                                     } else {
-                                        "删除".into()
+                                        crate::tr!("view.delete_2").into()
                                     })
-                                    .tooltip("删除选中的配置目录及其所有版本")
+                                    .tooltip(crate::tr!("view.delete_the_selected_profile_directories_and_all_their_versions"))
                                     .disabled(
                                         self.operation_pending()
                                             || !self.loaded
