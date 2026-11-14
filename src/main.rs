@@ -7,6 +7,7 @@ mod app_assets;
 mod desktop;
 mod native_prompt;
 mod shell;
+mod single_instance;
 mod startup;
 mod store;
 mod themes;
@@ -46,6 +47,10 @@ fn config_directory() -> anyhow::Result<PathBuf> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let Some(instance) = single_instance::SingleInstance::acquire()? else {
+        return Ok(());
+    };
+    let activation_requests = instance.activation_requests();
     let store = store::Store::new(config_directory()?);
     // Windows otherwise quits when its last window closes, even if a tray icon
     // and application-owned state are still alive. Debug and release share this.
@@ -61,6 +66,15 @@ fn main() -> anyhow::Result<()> {
         app_assets::set_macos_application_icon();
         view::bind_keys(cx);
         shell::start(store, cx);
+        cx.spawn(async move |cx| {
+            while activation_requests.recv().await.is_ok() {
+                cx.update(|cx| {
+                    shell::show_main(cx);
+                });
+            }
+        })
+        .detach();
     });
+    drop(instance);
     Ok(())
 }
