@@ -4,6 +4,15 @@
 
 <img src="./docs/screenshot.png" alt="Codex Switch 应用截图" width="1000" />
 
+## 下载
+
+前往 [GitHub Releases](https://github.com/luoluoqixi/codex-switch/releases/latest) 获取最新版本，或直接点击：
+
+| 平台 | 下载 |
+| --- | --- |
+| Windows | [MSI 安装包](https://github.com/luoluoqixi/codex-switch/releases/latest/download/codex-switch-windows.msi) |
+| macOS | [DMG 安装包](https://github.com/luoluoqixi/codex-switch/releases/latest/download/codex-switch-macos.dmg) |
+
 ## windows
 
 ```sh
