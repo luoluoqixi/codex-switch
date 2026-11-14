@@ -1,0 +1,9 @@
+# GPUI's macOS dependencies use Option::map_or_default without a feature gate.
+# Inject the gate into dependencies as well as the application. Requires nightly.
+# Remove this flag once the API is stable or upstream stops using it.
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-Zcrate-attr=feature(result_option_map_or_default)",
+    # Most crates do not use this API; suppress warnings caused by the injection.
+    "-Aunused-features",
+]

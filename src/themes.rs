@@ -41,7 +41,7 @@ fn verify_listener() -> Result<()> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = expected;
+        drop(expected);
         Ok(())
     }
 }
@@ -538,13 +538,30 @@ fn run_worker(
 fn theme_directory(configured: &str) -> Result<PathBuf> {
     let configured = configured.trim().trim_matches('"');
     if configured.is_empty() {
-        Ok(std::env::current_exe()?
-            .parent()
-            .context("无法确定程序目录")?
-            .join("Themes"))
+        default_theme_directory(&std::env::current_exe()?)
     } else {
         Ok(std::path::absolute(configured)?)
     }
+}
+
+fn default_theme_directory(executable: &Path) -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if executable
+        .parent()
+        .is_some_and(|p| p.ends_with("Contents/MacOS"))
+        && executable
+            .ancestors()
+            .nth(3)
+            .is_some_and(|p| p.extension().is_some_and(|ext| ext == "app"))
+    {
+        // Keep imported themes outside the signed application bundle.
+        let home = std::env::var_os("HOME").context("无法获取用户主目录")?;
+        return Ok(PathBuf::from(home).join("Library/Application Support/Codex Switch/Themes"));
+    }
+    Ok(executable
+        .parent()
+        .context("无法确定程序目录")?
+        .join("Themes"))
 }
 
 fn browser_directory(state_path: &Path) -> PathBuf {

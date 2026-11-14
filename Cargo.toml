@@ -1,8 +1,19 @@
 [package]
 name = "codex-switch"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+description = "本地 Codex 配置管理工具，支持账号、供应商、模型配置切换与主题管理。"
 repository = "https://github.com/luoluoqixi/codex-switch"
+
+[package.metadata.bundle]
+name = "Codex Switch"
+identifier = "com.luoluoqixi.codex-switch"
+icon = ["assets/icon.icns", "assets/icon.ico", "assets/icon.png"]
+category = "Utility"
+copyright = "Copyright (c) 2026 luoluoqixi"
+
+[package.metadata.bundle.osx]
+minimum_system_version = "12.0"
 
 [dependencies]
 gpui-kit = { version = "0.9.1", features = ["gpui-fast", "syntect"] }
@@ -20,6 +31,11 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 tray-icon = { version = "0.25.1", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-registry = "0.6"

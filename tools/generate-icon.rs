@@ -8,6 +8,8 @@ use resvg::{
 use std::{fs, io::Write, path::Path};
 
 const ICON_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+// Leave room around the artwork to match the optical size of macOS Dock icons.
+const MACOS_ICON_SCALE: f32 = 0.86;
 const PREVIEW: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420">
   <rect width="960" height="420" fill="#F2F4F6"/>
   <rect x="480" width="480" height="420" fill="#141A21"/>
@@ -34,13 +36,17 @@ fn main() -> Result<()> {
     let icon = usvg::Tree::from_data(&source, &options).context("无法解析应用图标 SVG")?;
 
     let png = render(&icon, 512, 512)?.encode_png()?;
+    let macos_png = render_macos_icon(&icon, 512)?.encode_png()?;
     let ico = encode_ico(&icon)?;
+    let icns = encode_icns(&icon)?;
     let preview = render_preview(&icon, &options)?.encode_png()?;
 
     fs::create_dir_all(root.join("docs"))?;
     for (name, data) in [
         ("assets/icon.png", png),
+        ("assets/icon-macos.png", macos_png),
         ("assets/icon.ico", ico),
+        ("assets/icon.icns", icns),
         ("docs/icon-preview.png", preview),
     ] {
         fs::write(root.join(name), data).with_context(|| format!("无法写入 {name}"))?;
@@ -50,10 +56,22 @@ fn main() -> Result<()> {
 }
 
 fn render(tree: &usvg::Tree, width: u32, height: u32) -> Result<Pixmap> {
+    render_scaled(tree, width, height, 1.0)
+}
+
+fn render_macos_icon(tree: &usvg::Tree, size: u32) -> Result<Pixmap> {
+    render_scaled(tree, size, size, MACOS_ICON_SCALE)
+}
+
+fn render_scaled(tree: &usvg::Tree, width: u32, height: u32, artwork_scale: f32) -> Result<Pixmap> {
     let mut pixmap = Pixmap::new(width, height).context("无法分配图标画布")?;
     let scale = Transform::from_scale(
-        width as f32 / tree.size().width(),
-        height as f32 / tree.size().height(),
+        width as f32 / tree.size().width() * artwork_scale,
+        height as f32 / tree.size().height() * artwork_scale,
+    )
+    .post_translate(
+        width as f32 * (1.0 - artwork_scale) / 2.0,
+        height as f32 * (1.0 - artwork_scale) / 2.0,
     );
     resvg::render(tree, scale, &mut pixmap.as_mut());
     Ok(pixmap)
@@ -84,6 +102,32 @@ fn encode_ico(tree: &usvg::Tree) -> Result<Vec<u8>> {
         ico.extend_from_slice(&frame);
     }
     Ok(ico)
+}
+
+fn encode_icns(tree: &usvg::Tree) -> Result<Vec<u8>> {
+    // macOS PNG chunks: standard and Retina representations up to 1024px.
+    let mut chunks = Vec::new();
+    for (kind, size) in [
+        (*b"icp4", 16),
+        (*b"ic11", 32),
+        (*b"icp5", 32),
+        (*b"ic12", 64),
+        (*b"ic07", 128),
+        (*b"ic13", 256),
+        (*b"ic08", 256),
+        (*b"ic14", 512),
+        (*b"ic09", 512),
+        (*b"ic10", 1024),
+    ] {
+        let png = render_macos_icon(tree, size)?.encode_png()?;
+        chunks.extend_from_slice(&kind);
+        chunks.extend_from_slice(&u32::try_from(png.len() + 8)?.to_be_bytes());
+        chunks.extend_from_slice(&png);
+    }
+    let mut icns = Vec::from(*b"icns");
+    icns.extend_from_slice(&u32::try_from(chunks.len() + 8)?.to_be_bytes());
+    icns.extend_from_slice(&chunks);
+    Ok(icns)
 }
 
 fn render_preview(icon: &usvg::Tree, options: &usvg::Options<'_>) -> Result<Pixmap> {

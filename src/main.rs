@@ -57,6 +57,8 @@ fn main() -> anyhow::Result<()> {
     });
     app.run(move |cx| {
         init(cx);
+        #[cfg(target_os = "macos")]
+        app_assets::set_macos_application_icon();
         view::bind_keys(cx);
         shell::start(store, cx);
     });

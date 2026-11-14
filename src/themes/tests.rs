@@ -390,6 +390,21 @@ fn default_directory_is_relative_to_executable_instead_of_working_directory() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn bundled_application_keeps_imported_themes_outside_the_signed_bundle() {
+    let executable = Path::new("/Applications/Codex Switch.app/Contents/MacOS/codex-switch");
+    assert_eq!(
+        default_theme_directory(executable).unwrap(),
+        PathBuf::from(std::env::var_os("HOME").unwrap())
+            .join("Library/Application Support/Codex Switch/Themes")
+    );
+    assert_eq!(
+        default_theme_directory(Path::new("/tmp/Contents/MacOS/codex-switch")).unwrap(),
+        Path::new("/tmp/Contents/MacOS/Themes")
+    );
+}
+
 #[test]
 fn transparency_dialog_starts_at_author_alpha_until_user_overrides_it() {
     let temp = tempfile::tempdir().unwrap();
