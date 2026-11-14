@@ -128,6 +128,7 @@ struct OperationFinished {
     success: bool,
     close_window: bool,
     message: String,
+    saved_config: Option<String>,
 }
 
 impl EventEmitter<OperationFinished> for Switcher {}
@@ -139,6 +140,7 @@ struct Outcome {
     reveal: Option<PathBuf>,
     open_path: Option<PathBuf>,
     config: Option<String>,
+    saved_config: Option<String>,
 }
 
 pub(crate) struct Switcher {
@@ -312,10 +314,7 @@ impl Switcher {
         }
         self.app_revision += 1;
         self.is_error = false;
-        let close_auxiliary = matches!(
-            operation,
-            Operation::SaveConfig(_, _) | Operation::Create(_)
-        );
+        let close_auxiliary = matches!(operation, Operation::Create(_));
         self.message = match &operation {
             Operation::Refresh => crate::tr!("view.loading_configuration").into(),
             Operation::Backup(name) => crate::tr!("view.saving_to"; name = name),
@@ -432,6 +431,7 @@ impl Switcher {
                         .save_config(&original, &edited)
                         .map(|message| Outcome {
                             message,
+                            saved_config: Some(edited),
                             ..Default::default()
                         }),
                     Operation::SelectTheme(id) => {
@@ -477,9 +477,11 @@ impl Switcher {
                 }
                 this.busy = false;
                 let success = result.is_ok();
+                let mut saved_config = None;
                 match result {
                     Ok(outcome) => {
                         this.message = outcome.message;
+                        saved_config = outcome.saved_config;
                         if let Some(selected) = outcome.selected {
                             this.selected = Some(selected);
                         }
@@ -537,6 +539,7 @@ impl Switcher {
                     success,
                     close_window: success && close_auxiliary,
                     message: this.message.clone(),
+                    saved_config,
                 });
             });
         })

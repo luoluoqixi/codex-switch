@@ -206,6 +206,11 @@ impl AuxiliaryWindow {
                     return;
                 }
                 if event.success {
+                    if let WindowContent::Editor(editor) = &mut this.content
+                        && let Some(config) = &event.saved_config
+                    {
+                        editor.mark_saved(config.clone());
+                    }
                     this.error.clear();
                     this.message = event.message.clone();
                     if event.close_window {

@@ -29,6 +29,11 @@ impl ConfigEditor {
     pub(super) fn is_dirty(&self, cx: &App) -> bool {
         self.state.read(cx).value().as_ref() != self.original
     }
+
+    pub(super) fn mark_saved(&mut self, contents: String) {
+        self.original = contents;
+        self.discard_pending = false;
+    }
 }
 
 impl AuxiliaryWindow {
