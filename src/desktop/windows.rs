@@ -31,17 +31,18 @@ $results = foreach ($spec in $specs) {
     $custom = [string]$spec.path
     # A desktop shortcut such as com.openai.codex is not an AppUserModelID.
     $registered = $startApps | Where-Object { $_.Name -eq $name -and $_.AppID -match '^[^!]+![^!]+$' } | Select-Object -First 1
-    $appId = if ($registered) { [string]$registered.AppID } else { '' }
+    $appId = ''
     $expected = @()
     $problem = ''
     if ($custom) {
         if ((Test-Path -LiteralPath $custom -PathType Leaf) -and ([IO.Path]::GetFileName($custom) -ieq "$name.exe") -and (Test-GuiExecutable $custom)) {
             $expected += [IO.Path]::GetFullPath($custom)
         } else { $problem = 'path' }
-        $appId = ''
-    } else {
-        # Resolve the package independently of StartApps: duplicate display names
-        # and desktop shortcuts must not hide an installed, stopped application.
+    }
+    # Resolve package identity even for a custom path. Launching a packaged EXE
+    # directly can lose its Shell identity and display a generic taskbar icon.
+    # Only associate the selected executable with its own manifest entry.
+    if (-not $problem) {
         foreach ($package in @($packages | Sort-Object @{ Expression = { if ($_.Name -eq 'OpenAI.Codex') { 0 } else { 1 } } })) {
             if ($package.InstallLocation -and $package.PackageFamilyName) {
                 try {
@@ -49,9 +50,9 @@ $results = foreach ($spec in $specs) {
                     $manifest = [xml](Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop)
                     foreach ($application in $manifest.Package.Applications.Application) {
                         if ([IO.Path]::GetFileName([string]$application.Executable) -ieq "$name.exe") {
-                            $candidate = Join-Path $package.InstallLocation ([string]$application.Executable)
-                            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                                $expected += $candidate
+                            $candidate = [IO.Path]::GetFullPath((Join-Path $package.InstallLocation ([string]$application.Executable)))
+                            if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and (-not $custom -or $expected -icontains $candidate)) {
+                                if (-not $custom) { $expected += $candidate }
                                 if ($expected.Count -eq 1) {
                                     $appId = [string]$package.PackageFamilyName + '!' + [string]$application.Id
                                 }
@@ -61,6 +62,8 @@ $results = foreach ($spec in $specs) {
                 } catch { }
             }
         }
+    }
+    if (-not $custom) {
         foreach ($base in @($env:LOCALAPPDATA, $env:ProgramFiles)) {
             if ($base) {
                 foreach ($relative in @("Programs\$name\$name.exe", "$name\$name.exe")) {
@@ -88,6 +91,7 @@ $results = foreach ($spec in $specs) {
         }
     }
     $path = if ($expected.Count) { [string]$expected[0] } else { '' }
+    if (-not $custom -and -not $path -and $registered) { $appId = [string]$registered.AppID }
     [pscustomobject]@{ name = $name; path = $path; appId = $appId; pids = @($matched | ForEach-Object { $_.Id }); problem = $problem }
 }
 ConvertTo-Json -InputObject @($results) -Depth 4 -Compress"###;
@@ -187,38 +191,27 @@ pub(super) fn close(status: &AppStatus, paths: &[String; 1]) -> Result<()> {
 
 pub(super) fn launch(status: &AppStatus) -> Result<()> {
     let theme_arguments = crate::themes::launch_arguments()?;
-    // AppsFolder navigation discards debugging arguments. Always launch with
-    // the persistent theme endpoint, including while themes are switched off.
-    let mut direct_error = None;
+    // Activate packaged apps through their registered identity so the taskbar
+    // uses the manifest's icon and grouping, just like a manual Shell launch.
+    // ActivateApplication also forwards the persistent theme arguments.
+    if let Some(id) = &status.registered_id {
+        return activate_with_arguments(id, &theme_arguments);
+    }
     if let Some(path) = &status.path {
         let mut command = Command::new(path);
         command.args(&theme_arguments);
         if let Some(parent) = path.parent() {
             command.current_dir(parent);
         }
-        match command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-        {
-            Ok(_) => return Ok(()),
-            Err(error) => direct_error = Some(error),
-        }
-    }
-    if let Some(id) = &status.registered_id {
-        return activate_with_arguments(id, &theme_arguments).with_context(|| {
-            match (&status.path, direct_error) {
-                (Some(path), Some(error)) => crate::tr!("windows.could_not_start_directly_windows_app_activation_also_failed"; arg0 = path.display(), error = error),
-                _ => crate::tr!("windows.windows_app_activation_failed_and_the_executable_could_not")
-                    .into(),
-            }
-        });
-    }
-    if let Some(error) = direct_error {
-        return Err(error).context(crate::tr!(
-            "windows.could_not_start_chatgpt_exe_directly_check_the_path"
-        ));
+            .context(crate::tr!(
+                "windows.could_not_start_chatgpt_exe_directly_check_the_path"
+            ))?;
+        return Ok(());
     }
     bail!(crate::tr!(
         "windows.could_not_open_the_app_with_theme_support_select"
@@ -298,12 +291,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stopped_store_app_is_discovered_despite_duplicate_or_missing_start_entries() {
+    fn discovery_preserves_package_identity_for_automatic_and_custom_paths() {
         let temp = tempfile::tempdir().unwrap();
         let package_root = temp.path().join("Codex package with spaces");
         std::fs::create_dir_all(package_root.join("app")).unwrap();
         let executable = package_root.join("app/ChatGPT.exe");
-        std::fs::write(&executable, b"test fixture").unwrap();
+        // Minimal PE header accepted by the real GUI executable validator.
+        let mut image = vec![0u8; 160];
+        image[..2].copy_from_slice(&0x5A4Du16.to_le_bytes());
+        image[0x3C..0x40].copy_from_slice(&64u32.to_le_bytes());
+        image[64..68].copy_from_slice(&0x4550u32.to_le_bytes());
+        image[88..90].copy_from_slice(&0x20Bu16.to_le_bytes());
+        image[156..158].copy_from_slice(&2u16.to_le_bytes());
+        std::fs::write(&executable, &image).unwrap();
+        let standalone_root = temp.path().join("standalone");
+        std::fs::create_dir_all(&standalone_root).unwrap();
+        let standalone = standalone_root.join("ChatGPT.exe");
+        std::fs::write(&standalone, &image).unwrap();
+        let invalid = temp.path().join("missing/ChatGPT.exe");
         std::fs::write(package_root.join("AppxManifest.xml"), r#"<?xml version="1.0"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
   <Applications>
@@ -326,19 +331,53 @@ function Get-Process {
     if ($null -ne $Id) { [pscustomobject]@{ SessionId = 1 } }
 }
 "#;
-        for no_start in ["0", "1"] {
-            let mut command = powershell(&format!("{mocks}\n{DISCOVERY_SCRIPT}"));
-            command.env("CODEX_SWITCH_APPS", r#"[{"name":"ChatGPT","path":""}]"#);
-            command.env("CODEX_SWITCH_TEST_PACKAGE", &package_root);
-            command.env("CODEX_SWITCH_TEST_NO_START", no_start);
-            let result: Value = serde_json::from_slice(&output(command).unwrap()).unwrap();
-            assert_eq!(result[0]["appId"], "OpenAI.Codex_test!App");
-            assert_eq!(
-                PathBuf::from(result[0]["path"].as_str().unwrap()),
-                executable
-            );
-            assert_eq!(result[0]["pids"], json!([]));
-            assert_eq!(result[0]["problem"], "");
+        let custom_package = executable.to_string_lossy().to_uppercase();
+        for (custom, expected_path, expected_id, problem) in [
+            (
+                String::new(),
+                executable.clone(),
+                "OpenAI.Codex_test!App",
+                "",
+            ),
+            (
+                custom_package,
+                executable.clone(),
+                "OpenAI.Codex_test!App",
+                "",
+            ),
+            (
+                standalone.to_string_lossy().into_owned(),
+                standalone,
+                "",
+                "",
+            ),
+            (
+                invalid.to_string_lossy().into_owned(),
+                PathBuf::new(),
+                "",
+                "path",
+            ),
+        ] {
+            for no_start in ["0", "1"] {
+                let mut command = powershell(&format!("{mocks}\n{DISCOVERY_SCRIPT}"));
+                command.env(
+                    "CODEX_SWITCH_APPS",
+                    json!([{"name": "ChatGPT", "path": custom}]).to_string(),
+                );
+                command.env("CODEX_SWITCH_TEST_PACKAGE", &package_root);
+                command.env("CODEX_SWITCH_TEST_NO_START", no_start);
+                let result: Value = serde_json::from_slice(&output(command).unwrap()).unwrap();
+                assert_eq!(result[0]["appId"], expected_id, "custom={custom}");
+                assert!(
+                    result[0]["path"]
+                        .as_str()
+                        .unwrap()
+                        .eq_ignore_ascii_case(&expected_path.to_string_lossy().replace('/', r"\")),
+                    "custom={custom}"
+                );
+                assert_eq!(result[0]["pids"], json!([]));
+                assert_eq!(result[0]["problem"], problem);
+            }
         }
     }
 
