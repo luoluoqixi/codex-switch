@@ -12,6 +12,7 @@ impl AuxiliaryWindow {
         } else {
             std::env::consts::OS
         };
+        let checking = self.owner.read(cx).updates.is_checking();
         div().flex_1().min_h_0().overflow_y_scrollbar().child(
             div()
                 .flex()
@@ -20,6 +21,23 @@ impl AuxiliaryWindow {
                 .gap_3()
                 .child(div().text_lg().font_semibold().child(crate::APP_NAME))
                 .child(div().child(crate::tr!("about_window.version"; arg0 = crate::APP_VERSION)))
+                .child(
+                    Button::new("check-for-updates")
+                        .outline()
+                        .icon(IconName::RefreshCw)
+                        .label(if checking {
+                            crate::tr!("update.checking")
+                        } else {
+                            crate::tr!("update.check_for_updates")
+                        })
+                        .loading(checking)
+                        .disabled(checking || self.owner.read(cx).operation_pending())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.owner.update(cx, |owner, cx| {
+                                owner.check_updates(window.window_handle(), cx)
+                            });
+                        })),
+                )
                 .child(div().child(crate::tr!(
                     "about_window.a_local_codex_profile_switcher_and_backup_tool"
                 )))

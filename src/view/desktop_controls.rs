@@ -72,6 +72,11 @@ impl Switcher {
                     )
                     .child(self.render_app_controls(DesktopApp::ChatGpt, cx))
                     .child(div().flex_1())
+                    .children(
+                        self.updates
+                            .available()
+                            .map(|_| self.render_update_button(cx)),
+                    )
                     .child(
                         Button::new("open-root")
                             .ghost()

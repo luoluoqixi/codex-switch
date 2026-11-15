@@ -13,6 +13,7 @@ pub(super) struct SettingsForm {
     pub(super) theme_directory: Entity<InputState>,
     launch_at_login: bool,
     exit_on_close: bool,
+    auto_check_updates: bool,
     language: Language,
 }
 
@@ -25,6 +26,7 @@ impl SettingsForm {
         Self {
             launch_at_login: settings.launch_at_login,
             exit_on_close: settings.exit_on_close,
+            auto_check_updates: settings.auto_check_updates,
             language: settings.language,
             version_limit: cx.new(|cx| {
                 InputState::new(window, cx).default_value(settings.max_versions.to_string())
@@ -69,6 +71,7 @@ impl AuxiliaryWindow {
                             .to_string(),
                         launch_at_login: form.launch_at_login,
                         exit_on_close: form.exit_on_close,
+                        auto_check_updates: form.auto_check_updates,
                     }),
                     window,
                     cx,
@@ -205,6 +208,14 @@ impl AuxiliaryWindow {
                         this.error.clear(); cx.notify();
                     })))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground))
+                .child(div().font_semibold().mt_2().child(crate::tr!("update.settings_heading")))
+                .child(Switch::new("auto-check-updates").label(crate::tr!("update.auto_check_updates"))
+                    .checked(form.auto_check_updates).disabled(busy)
+                    .on_change(cx.listener(|this, checked, _, cx| {
+                        if let WindowContent::Settings(form) = &mut this.content { form.auto_check_updates = *checked; }
+                        this.error.clear(); cx.notify();
+                    })))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(crate::tr!("update.auto_check_help")))
                 .child(div().font_semibold().mt_2().child(crate::tr!("settings_window.back_up")))
                 .child(div().text_sm().child(crate::tr!("settings_window.versions_to_keep_per_profile")))
                 .child(Input::new(&form.version_limit).id("max-versions")

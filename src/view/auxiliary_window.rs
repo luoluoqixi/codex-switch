@@ -106,7 +106,7 @@ fn open_auxiliary_window(
         return;
     }
     let (default_size, minimum_size) = match &kind {
-        WindowKind::About => (size(px(440.), px(260.)), size(px(360.), px(240.))),
+        WindowKind::About => (size(px(520.), px(420.)), size(px(420.), px(340.))),
         WindowKind::NewBackup => (size(px(480.), px(240.)), size(px(380.), px(240.))),
         WindowKind::Editor => (size(px(880.), px(640.)), size(px(560.), px(380.))),
         WindowKind::Settings => (size(px(600.), px(520.)), size(px(460.), px(380.))),

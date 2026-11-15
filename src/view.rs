@@ -7,6 +7,7 @@ mod history_window;
 mod new_backup_window;
 mod settings_window;
 mod theme_controls;
+mod update_controls;
 
 use crate::desktop::{self, AppAction, AppStatus, DesktopApp};
 use crate::store::{Profile, Settings, Snapshot, Store};
@@ -172,6 +173,8 @@ pub(crate) struct Switcher {
     scroll: UniformListScrollHandle,
     message: String,
     is_error: bool,
+    updates: crate::update::UpdateChecker,
+    pending_update_notice: Option<update_controls::UpdateNotice>,
 }
 
 impl Switcher {
@@ -256,6 +259,8 @@ impl Switcher {
             scroll: UniformListScrollHandle::new(),
             message: crate::tr!("view.loading_configuration").into(),
             is_error: false,
+            updates: crate::update::UpdateChecker::default(),
+            pending_update_notice: None,
         };
         this._app_monitor = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -272,6 +277,7 @@ impl Switcher {
                         {
                             this.show_theme_error(error, cx);
                         }
+                        this.show_pending_update_notice(cx);
                     })
                     .is_err()
                 {
@@ -531,6 +537,8 @@ impl Switcher {
                 cx.refresh_windows();
                 this.refresh_apps(cx);
                 this.refresh_themes(cx);
+                this.check_updates_on_startup(cx);
+                this.show_pending_update_notice(cx);
                 if (theme_operation || debug_launch) && !success {
                     this.show_theme_error(this.message.clone(), cx);
                 }

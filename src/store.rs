@@ -50,6 +50,7 @@ pub(crate) struct Settings {
     pub theme_directory: String,
     pub launch_at_login: bool,
     pub exit_on_close: bool,
+    pub auto_check_updates: bool,
 }
 
 impl Default for Settings {
@@ -61,6 +62,7 @@ impl Default for Settings {
             theme_directory: String::new(),
             launch_at_login: false,
             exit_on_close: false,
+            auto_check_updates: true,
         }
     }
 }
@@ -588,6 +590,7 @@ impl Store {
             theme_directory: value["themeDirectory"].as_str().unwrap_or_default().into(),
             launch_at_login: value["launchAtLogin"].as_bool().unwrap_or(false),
             exit_on_close: value["exitOnClose"].as_bool().unwrap_or(false),
+            auto_check_updates: value["autoCheckUpdates"].as_bool().unwrap_or(true),
         })
     }
 
@@ -619,6 +622,7 @@ impl Store {
         value["themeDirectory"] = json!(settings.theme_directory);
         value["launchAtLogin"] = json!(settings.launch_at_login);
         value["exitOnClose"] = json!(settings.exit_on_close);
+        value["autoCheckUpdates"] = json!(settings.auto_check_updates);
         let bytes = serde_json::to_vec_pretty(&value)?;
         let startup = crate::startup::apply(settings.launch_at_login, self.root())?;
         if let Err(error) = replace_all(vec![(path, bytes)], |_| Ok(())) {
@@ -1250,6 +1254,24 @@ mod tests {
                     .is_err()
             );
             assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn update_checks_default_on_and_respect_an_existing_preference() {
+        let (_directory, store) = fixture();
+        assert!(store.settings().unwrap().auto_check_updates);
+        fs::create_dir_all(store.backups()).unwrap();
+        let path = store.backups().join("settings.json");
+        fs::write(&path, br#"{"maxVersions":10}"#).unwrap();
+        assert!(store.settings().unwrap().auto_check_updates);
+        for enabled in [false, true] {
+            fs::write(
+                &path,
+                serde_json::to_vec(&json!({"maxVersions":10,"autoCheckUpdates":enabled})).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(store.settings().unwrap().auto_check_updates, enabled);
         }
     }
 }

@@ -12,6 +12,7 @@ mod single_instance;
 mod startup;
 mod store;
 mod themes;
+mod update;
 mod view;
 mod window_placement;
 
