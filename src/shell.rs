@@ -54,7 +54,7 @@ fn main_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             display_id,
-            size(px(760.), px(480.)),
+            size(px(800.), px(480.)),
             cx,
         ))),
         window_min_size: Some(size(px(640.), px(380.))),
@@ -311,15 +311,18 @@ fn tray_menu(
     }
     menu.append_items(&[
         &show,
-        &switch,
-        &theme_menu,
-        &MenuItem::with_id("settings", crate::tr!("shell.settings"), true, None),
+        &PredefinedMenuItem::separator(),
         &MenuItem::with_id(
             "restart-chatgpt",
             crate::tr!("shell.restart_chatgpt"),
             true,
             None,
         ),
+        &PredefinedMenuItem::separator(),
+        &switch,
+        &theme_menu,
+        &PredefinedMenuItem::separator(),
+        &MenuItem::with_id("settings", crate::tr!("shell.settings"), true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("quit", crate::tr!("shell.quit_codex_switch"), true, None),
     ])?;

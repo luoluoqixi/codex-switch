@@ -326,9 +326,15 @@ impl Switcher {
             .flex()
             .items_center()
             .gap_2()
-            .ml_10()
+            .ml_4()
             .min_w_0()
-            .max_w_96()
+            .mr_0()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(crate::tr!("theme_controls.theme_label")),
+            )
             .child(
                 Select::new(&self.theme_select)
                     .id("theme-select")
@@ -343,6 +349,7 @@ impl Switcher {
                 Button::new("import-theme")
                     .outline()
                     .small()
+                    .icon(IconName::FileUp)
                     .label(crate::tr!("theme_controls.import"))
                     .accessibility_label(crate::tr!("theme_controls.import_theme_zips_or_background_images_multiple_selection_supported"))
                     .tooltip(crate::tr!("theme_controls.import_theme_zips_or_background_images_multiple_files"))
@@ -353,6 +360,7 @@ impl Switcher {
                 Button::new("theme-effects")
                     .outline()
                     .small()
+                    .icon(IconName::SlidersHorizontal)
                     .label(crate::tr!("theme_controls.effects"))
                     .accessibility_label(crate::tr!("theme_controls.theme_effects"))
                     .disabled(disabled || self.themes.selected.is_none())

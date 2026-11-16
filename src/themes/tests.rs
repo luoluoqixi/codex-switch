@@ -249,10 +249,10 @@ fn root_manifest_takes_priority_and_extracts_all_contents_into_theme_id() {
 }
 
 #[test]
-fn importing_requires_manifest_in_root_or_first_visible_directory() {
+fn importing_accepts_theme_json_and_requires_metadata_in_root_or_first_visible_directory() {
     let temp = tempfile::tempdir().unwrap();
     for entries in [
-        vec![("theme.json", b"{}".as_slice())],
+        vec![("readme.txt", b"no metadata".as_slice())],
         vec![
             ("first/readme.txt", b"first".as_slice()),
             (
@@ -275,6 +275,38 @@ fn importing_requires_manifest_in_root_or_first_visible_directory() {
         assert!(extract_zip(&zip, &root).is_err());
         assert!(!root.exists());
     }
+}
+
+#[test]
+fn theme_json_zip_metadata_is_used_when_manifest_is_absent_and_manifest_takes_priority() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Themes");
+    let zip = temp.path().join("theme-only.zip");
+    archive(
+        &zip,
+        &[
+            (
+                "package/theme.json",
+                br#"{"id":"theme-from-json","name":"JSON Theme"}"#,
+            ),
+            ("package/assets/background.png", b"image"),
+        ],
+    );
+    extract_zip(&zip, &root).unwrap();
+    assert!(root.join("theme-from-json/theme.json").is_file());
+    assert!(root.join("theme-from-json/assets/background.png").is_file());
+
+    let priority = temp.path().join("priority.zip");
+    archive(
+        &priority,
+        &[
+            ("manifest.json", br#"{"themeId":"manifest-wins"}"#),
+            ("theme.json", br#"{"id":"json-loses"}"#),
+        ],
+    );
+    extract_zip(&priority, &root).unwrap();
+    assert!(root.join("manifest-wins/manifest.json").is_file());
+    assert!(!root.join("json-loses").exists());
 }
 
 #[test]

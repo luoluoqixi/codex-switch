@@ -3,7 +3,17 @@ use std::borrow::Cow;
 
 assets::icon_assets!(
     ExtraIcons,
-    [FilePen, Power, Save, ArrowLeftRight, FolderClock, Trash, X]
+    [
+        FilePen,
+        FileUp,
+        Power,
+        Save,
+        ArrowLeftRight,
+        FolderClock,
+        SlidersHorizontal,
+        Trash,
+        X
+    ]
 );
 
 pub(crate) struct AppAssets;

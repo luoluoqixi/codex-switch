@@ -998,7 +998,7 @@ impl Render for Switcher {
                                     .flex()
                                     .flex_col()
                                     .min_w_0()
-                                    .flex_1()
+                                    .max_w_56()
                                     .gap_0p5()
                                     .child(div().font_semibold().truncate().child(current))
                                     .child(
@@ -1038,6 +1038,7 @@ impl Render for Switcher {
                                         cx.reveal_path(&path)
                                     })),
                             )
+                            .child(div().flex_1())
                             .child(self.render_theme_controls(cx)),
                     )
                     .children(self.snapshot.warning.clone().map(|warning| {

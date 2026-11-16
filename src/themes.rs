@@ -1,5 +1,5 @@
 //! Theme library and the lifetime of the optional, in-process CDP worker.
-//! Import reads the manifest only to locate and name the extracted theme.
+//! Import reads theme metadata to locate and name the extracted theme.
 mod cdp;
 mod identity;
 mod image_import;
@@ -674,35 +674,53 @@ fn extract_zip(path: &Path, root: &Path) -> Result<()> {
         }
         names.push(name);
     }
-    let (prefix, manifest_index) =
-        if let Some(index) = names.iter().position(|n| n == "manifest.json") {
-            (String::new(), index)
-        } else {
-            let prefix = first_directory.context(crate::tr!(
-                "themes.no_manifest_json_was_found_at_the_zip_root"
-            ))?;
+    let metadata = names
+        .iter()
+        .position(|name| name == "manifest.json")
+        .map(|index| (String::new(), index, true))
+        .or_else(|| {
+            names
+                .iter()
+                .position(|name| name == "theme.json")
+                .map(|index| (String::new(), index, false))
+        })
+        .or_else(|| {
+            let prefix = first_directory?;
             let manifest = format!("{prefix}manifest.json");
-            let index = names
+            names
                 .iter()
                 .position(|name| name == &manifest)
-                .context(crate::tr!("themes.no_manifest_json_was_found_in_the_zip_s"))?;
-            (prefix, index)
-        };
-    let manifest: Value = {
-        let mut entry = archive.by_index(manifest_index)?;
+                .map(|index| (prefix.clone(), index, true))
+                .or_else(|| {
+                    let theme = format!("{prefix}theme.json");
+                    names
+                        .iter()
+                        .position(|name| name == &theme)
+                        .map(|index| (prefix, index, false))
+                })
+        })
+        .context(crate::tr!("themes.no_theme_metadata_was_found_in_the_zip"))?;
+    let (prefix, metadata_index, is_manifest) = metadata;
+    let metadata: Value = {
+        let mut entry = archive.by_index(metadata_index)?;
         let mut bytes = Vec::new();
         io::Read::read_to_end(&mut entry, &mut bytes)
-            .context(crate::tr!("themes.could_not_read_manifest_json"))?;
+            .context(crate::tr!("themes.could_not_read_theme_metadata"))?;
         serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
-            .context(crate::tr!("themes.manifest_json_is_not_valid_json"))?
+            .context(crate::tr!("themes.theme_metadata_is_not_valid_json"))?
     };
-    let name = manifest["themeId"]
-        .as_str()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .context(crate::tr!(
-            "themes.manifest_json_must_contain_a_nonempty_themeid"
-        ))?;
+    let name = if is_manifest {
+        metadata["themeId"].as_str()
+    } else {
+        ["themeId", "id", "name", "displayName", "title"]
+            .into_iter()
+            .find_map(|key| metadata[key].as_str())
+    }
+    .map(str::trim)
+    .filter(|name| !name.is_empty())
+    .context(crate::tr!(
+        "themes.theme_metadata_must_contain_a_nonempty_name_or_id"
+    ))?;
     let folder = theme_folder_name(name)?;
     fs::create_dir_all(root).context(crate::tr!(
         "image_import.could_not_create_the_theme_directory"
