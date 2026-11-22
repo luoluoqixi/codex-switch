@@ -12,6 +12,7 @@ pub(super) struct SettingsForm {
     pub(super) app_path: Entity<InputState>,
     pub(super) theme_directory: Entity<InputState>,
     launch_at_login: bool,
+    launch_hidden_to_tray: bool,
     exit_on_close: bool,
     auto_check_updates: bool,
     language: Language,
@@ -25,6 +26,7 @@ impl SettingsForm {
     ) -> Self {
         Self {
             launch_at_login: settings.launch_at_login,
+            launch_hidden_to_tray: settings.launch_hidden_to_tray,
             exit_on_close: settings.exit_on_close,
             auto_check_updates: settings.auto_check_updates,
             language: settings.language,
@@ -70,6 +72,7 @@ impl AuxiliaryWindow {
                             .trim_matches('"')
                             .to_string(),
                         launch_at_login: form.launch_at_login,
+                        launch_hidden_to_tray: form.launch_hidden_to_tray,
                         exit_on_close: form.exit_on_close,
                         auto_check_updates: form.auto_check_updates,
                     }),
@@ -201,6 +204,12 @@ impl AuxiliaryWindow {
                         this.error.clear(); cx.notify();
                     })))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground))
+                .child(Switch::new("launch-hidden-to-tray").label(crate::tr!("settings_window.launch_hidden_to_tray"))
+                    .checked(form.launch_hidden_to_tray).disabled(busy || !cfg!(any(target_os = "windows", target_os = "macos")))
+                    .on_click(cx.listener(|this, checked, _, cx| {
+                        if let WindowContent::Settings(form) = &mut this.content { form.launch_hidden_to_tray = *checked; }
+                        this.error.clear(); cx.notify();
+                    })))
                 .child(Switch::new("exit-on-close").label(crate::tr!("settings_window.quit_when_the_main_window_closes"))
                     .checked(form.exit_on_close).disabled(busy)
                     .on_click(cx.listener(|this, checked, _, cx| {

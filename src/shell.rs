@@ -27,7 +27,9 @@ enum Command {
 }
 
 pub(crate) fn start(store: Store, cx: &mut App) {
-    let (main_window, owner) = open_window(main_options(cx), cx, |window, cx| {
+    let launch_hidden = cfg!(any(target_os = "windows", target_os = "macos"))
+        && store.start_hidden_to_tray().unwrap_or(false);
+    let (main_window, owner) = open_window(main_options(cx, !launch_hidden), cx, |window, cx| {
         cx.new(|cx| Switcher::new(store, window, cx))
     })
     .expect(crate::tr!("shell.could_not_open_the_codex_switch_window"));
@@ -46,12 +48,14 @@ pub(crate) fn start(store: Store, cx: &mut App) {
     });
     // On macOS NSStatusItem must be created after the app event loop starts.
     cx.defer(install_tray);
-    cx.activate(true);
+    cx.activate(!launch_hidden);
 }
 
-fn main_options(cx: &App) -> WindowOptions {
+fn main_options(cx: &App, show: bool) -> WindowOptions {
     let display_id = crate::window_placement::current_display_id(cx);
     WindowOptions {
+        show,
+        focus: show,
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             display_id,
             size(px(800.), px(480.)),
@@ -118,7 +122,7 @@ pub(crate) fn show_main(cx: &mut App) -> Option<AnyWindowHandle> {
     }
     let view = owner.clone();
     // Opening a window renders synchronously; never call under owner.update.
-    match open_window(main_options(cx), cx, move |window, cx| {
+    match open_window(main_options(cx, true), cx, move |window, cx| {
         let focus = view.read(cx).main_focus();
         focus.focus(window, cx);
         view
@@ -429,6 +433,13 @@ fn install_tray(cx: &mut App) {
                     cx,
                 )
             });
+            let handle = cx.global::<AppShell>().main_window;
+            let visible = cx
+                .update_window(handle, |_, window, _| window.is_visible())
+                .unwrap_or(false);
+            if !visible {
+                show_main(cx);
+            }
         }
     }
 }

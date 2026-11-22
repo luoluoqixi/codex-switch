@@ -392,6 +392,7 @@
   "settings_window.the_system_file_picker_returned_no_result_try_again": "系统文件选择器未返回结果，请重试。",
   "settings_window.startup_and_closing": "启动与关闭",
   "settings_window.launch_codex_switch_at_login": "开机启动 Codex Switch",
+  "settings_window.launch_hidden_to_tray": "开机启动后隐藏到托盘",
   "settings_window.quit_when_the_main_window_closes": "关闭主窗口时退出程序",
   "settings_window.back_up": "备份",
   "settings_window.versions_to_keep_per_profile": "每个配置保留的版本数",

@@ -49,6 +49,7 @@ pub(crate) struct Settings {
     pub chatgpt_app_path: String,
     pub theme_directory: String,
     pub launch_at_login: bool,
+    pub launch_hidden_to_tray: bool,
     pub exit_on_close: bool,
     pub auto_check_updates: bool,
 }
@@ -61,6 +62,7 @@ impl Default for Settings {
             chatgpt_app_path: String::new(),
             theme_directory: String::new(),
             launch_at_login: false,
+            launch_hidden_to_tray: false,
             exit_on_close: false,
             auto_check_updates: true,
         }
@@ -589,9 +591,14 @@ impl Store {
             chatgpt_app_path: value["chatgptAppPath"].as_str().unwrap_or_default().into(),
             theme_directory: value["themeDirectory"].as_str().unwrap_or_default().into(),
             launch_at_login: value["launchAtLogin"].as_bool().unwrap_or(false),
+            launch_hidden_to_tray: value["launchHiddenToTray"].as_bool().unwrap_or(false),
             exit_on_close: value["exitOnClose"].as_bool().unwrap_or(false),
             auto_check_updates: value["autoCheckUpdates"].as_bool().unwrap_or(true),
         })
+    }
+
+    pub(crate) fn start_hidden_to_tray(&self) -> Result<bool> {
+        Ok(self.settings()?.launch_hidden_to_tray)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<String> {
@@ -621,6 +628,7 @@ impl Store {
         value["chatgptAppPath"] = json!(settings.chatgpt_app_path);
         value["themeDirectory"] = json!(settings.theme_directory);
         value["launchAtLogin"] = json!(settings.launch_at_login);
+        value["launchHiddenToTray"] = json!(settings.launch_hidden_to_tray);
         value["exitOnClose"] = json!(settings.exit_on_close);
         value["autoCheckUpdates"] = json!(settings.auto_check_updates);
         let bytes = serde_json::to_vec_pretty(&value)?;
@@ -1273,5 +1281,19 @@ mod tests {
             .unwrap();
             assert_eq!(store.settings().unwrap().auto_check_updates, enabled);
         }
+    }
+
+    #[test]
+    fn launch_hidden_to_tray_defaults_off_and_reads_saved_preference() {
+        let (_directory, store) = fixture();
+        assert!(!store.start_hidden_to_tray().unwrap());
+        fs::create_dir_all(store.backups()).unwrap();
+        let path = store.backups().join("settings.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({"maxVersions":10,"launchHiddenToTray":true})).unwrap(),
+        )
+        .unwrap();
+        assert!(store.start_hidden_to_tray().unwrap());
     }
 }
