@@ -749,6 +749,65 @@ mod tests {
         assert_eq!(before, fs::read(dir.path().join("theme.json")).unwrap());
     }
 
+    // Guard the actual surface declarations, not just the presence of alpha
+    // variables: a fixed transparent background leaves the slider ineffective.
+    fn wide_surface_rule(selector: &str, mode: Option<&str>) -> String {
+        let css = without_comments(BASE_CSS);
+        css.split('}')
+            .filter_map(|block| block.split_once('{'))
+            .find(|(header, _)| {
+                header.contains("[data-dream-art-wide=\"true\"]")
+                    && header.trim_end().ends_with(selector)
+                    && mode.is_none_or(|mode| {
+                        header.contains(&format!("[data-dream-task-mode=\"{mode}\"]"))
+                    })
+            })
+            .unwrap_or_else(|| panic!("missing wide surface rule: {selector}, {mode:?}"))
+            .1
+            .to_owned()
+    }
+
+    fn assert_scrim(body: &str, prefix: &str) {
+        let background = declarations(body)
+            .into_iter()
+            .find(|(property, _)| property == "background")
+            .expect("surface must have a background")
+            .1;
+        assert!(
+            background.starts_with("linear-gradient(90deg,"),
+            "{background}"
+        );
+        for stop in ["edge", "mid", "far"] {
+            assert!(background.contains(&format!("var(--ds-{prefix}{stop})")));
+        }
+    }
+
+    #[test]
+    fn wide_native_threads_keep_the_adjustable_scrim_in_all_task_modes() {
+        let selector = "main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not(:has([role=\"main\"]))";
+        for mode in ["ambient", "banner"] {
+            assert_scrim(&wide_surface_rule(selector, Some(mode)), "task-immersive-");
+        }
+        assert_scrim(&wide_surface_rule(selector, Some("full")), "immersive-");
+    }
+
+    #[test]
+    fn wide_legacy_surfaces_keep_the_adjustable_scrim() {
+        assert_scrim(
+            &wide_surface_rule(
+                ":not(:has([data-ds-part=\"main\"])) > [data-ds-part=\"home\"]",
+                None,
+            ),
+            "immersive-",
+        );
+    }
+
+    #[test]
+    fn wide_artwork_still_clears_the_macos_window_backdrop() {
+        let body = wide_surface_rule(".macos-window-backdrop", None);
+        assert!(declarations(&body).contains(&("background".into(), "transparent".into())));
+    }
+
     #[test]
     fn broken_theme_can_be_named_but_fails_when_applied() {
         let dir = tempfile::tempdir().unwrap();
