@@ -421,7 +421,10 @@ html[data-dream-skin="active"]:is([data-dream-task-mode="ambient"], [data-dream-
 
 html[data-dream-skin="active"]:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"])[data-dream-art-wide="true"]:has(main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"])):not(:has(main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"]):not([data-app-shell-active-page="false"], [data-app-shell-active-page="false"] *) [role="main"]))
   main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"]):not(:has([role="main"])) {
-  background: transparent !important;
+  background: linear-gradient(90deg,
+    var(--ds-task-immersive-edge),
+    var(--ds-task-immersive-mid) 64%,
+    var(--ds-task-immersive-far)) !important;
   border: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
@@ -1015,6 +1018,8 @@ html[data-dream-skin="active"][data-dream-art-wide="true"]:not(:has(main:is(.mai
   background-attachment: fixed !important;
 }
 
+/* Clear the native macOS backing layer so it cannot hide the wallpaper.
+   Main surfaces must keep their alpha-driven scrims for the transparency control. */
 html[data-dream-skin="active"][data-dream-art-wide="true"] .macos-window-backdrop {
   background: transparent !important;
 }
@@ -1032,7 +1037,10 @@ html[data-dream-skin="active"][data-dream-art-wide="true"]:not(:has(main:is(.mai
   [data-ds-part="main"],
 html[data-dream-skin="active"][data-dream-art-wide="true"]:not(:has(main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"])))
   :not(:has([data-ds-part="main"])) > [data-ds-part="home"] {
-  background: transparent !important;
+  background: linear-gradient(90deg,
+    var(--ds-immersive-edge),
+    var(--ds-immersive-mid) 64%,
+    var(--ds-immersive-far)) !important;
   border: 0 !important;
   box-shadow: none !important;
 }
